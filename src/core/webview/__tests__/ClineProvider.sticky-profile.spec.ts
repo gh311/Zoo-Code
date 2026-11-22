@@ -920,22 +920,35 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
 				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
 				{ name: "current-profile", id: "current-profile-id" },
+				{ name: "switched-profile", id: "switched-profile-id" },
 			])
 
-			// The serving profile's settings carry no apiProvider (for
-			// example a profile saved before a provider was selected) while
-			// the global values still hold a non-retired provider.
+			// The serving profile's settings carry no apiProvider, and each
+			// read returns a fresh object, as an activation-written profile
+			// would produce.
 			const getProviderSettingsSpy = vi
 				.spyOn(provider.contextProxy, "getProviderSettings")
-				.mockReturnValue({ apiModelId: "no-provider-model" } as ReturnType<ContextProxy["getProviderSettings"]>)
+				.mockImplementation(
+					() => ({ apiModelId: "no-provider-model" }) as ReturnType<ContextProxy["getProviderSettings"]>,
+				)
+
+			// A profile switch lands inside the getState allow-list await,
+			// after the restore re-stuck the task to "current-profile". The
+			// installation point then takes the mismatch branch, and the
+			// fallback — not the mocked settings — must supply the provider.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+			})
 
 			await provider.createTaskWithHistoryItem(historyItem)
 
 			getProviderSettingsSpy.mockRestore()
 
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			// The fallback keeps the current non-retired provider instead of
-			// installing a task with an unset provider.
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			// The serving settings carry no apiProvider; the fallback keeps
+			// the current non-retired provider instead of installing a task
+			// with an unset provider.
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
 		})
 
