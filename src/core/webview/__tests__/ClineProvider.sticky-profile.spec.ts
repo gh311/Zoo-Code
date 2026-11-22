@@ -118,13 +118,23 @@ vi.mock("../../diff/strategies/multi-search-replace", () => ({
 	}),
 }))
 
+// A stable CloudService instance mock. A test can control getAllowList, so it
+// can land a profile switch inside the await that getState() runs after it
+// snapshots the provider settings (PR 2649 review round 2).
+const cloudServiceMock = vi.hoisted(() => ({
+	isAuthenticated: vi.fn().mockReturnValue(false),
+	// The default keeps the prior harness behavior: getState() catches the
+	// throw and falls back to the organization allow-all list.
+	getAllowList: vi.fn<() => Promise<unknown>>(() => {
+		throw new Error("getAllowList is not configured for this test")
+	}),
+}))
+
 vi.mock("@roo-code/cloud", () => ({
 	CloudService: {
 		hasInstance: vi.fn().mockReturnValue(true),
 		get instance() {
-			return {
-				isAuthenticated: vi.fn().mockReturnValue(false),
-			}
+			return cloudServiceMock
 		},
 	},
 	getRooCodeApiUrl: vi.fn().mockReturnValue("https://app.roocode.com"),
@@ -824,6 +834,68 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
 			expect(taskOptions?.historyItem?.apiConfigName).not.toBe("current-profile")
+		})
+
+		it("serves the settings of the profile selected during the getState allow-list await (#970 review round 2)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// The task last ran on "saved-profile"; the user switched to
+			// "current-profile" after it stopped. The restore's decision keeps
+			// "current-profile" and re-sticks the task to it.
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+			// The current profile's settings, as its activation wrote them.
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+			await provider.contextProxy.setValue("apiModelId", "gpt-current-256k")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openrouter },
+			])
+			const activateProviderProfileSpy = vi
+				.spyOn(provider, "activateProviderProfile")
+				.mockResolvedValue(undefined)
+
+			// The real getState() snapshots the provider settings, then awaits
+			// CloudService.instance.getAllowList(). A profile switch runs on
+			// providerProfileMutationQueue and can complete during that await,
+			// after the snapshot. Land the switch inside the await: the serving
+			// name then returns the new profile while the snapshot still holds
+			// the old profile's settings.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openrouter)
+				await provider.contextProxy.setValue("apiModelId", "switched-512k")
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			// The decision kept the user's profile and activated nothing stale.
+			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
+
+			// The installed task records the profile selected during the await...
+			expect(historyItem.apiConfigName).toBe("switched-profile")
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+
+			// ...and serves that profile's settings, never the stale snapshot's.
+			// The name and the configuration come from one installation point.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openrouter)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-512k")
+			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("gpt-current-256k")
 		})
 
 		it("should not restore an empty task apiConfigName profile from history", async () => {

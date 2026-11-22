@@ -1665,15 +1665,25 @@ export class ClineProvider
 
 		const { apiConfiguration, enableCheckpoints, checkpointTimeout, experiments, diffFuzzyThreshold } =
 			await this.getState()
+		// The task runs the configuration this destructure captured. A profile
+		// switch that completes at the installation point below replaces it.
+		let taskApiConfiguration = apiConfiguration
 
 		// A profile switch can run between the decision above and this point:
 		// restores run on historyTaskCreationQueue while switches run on
 		// providerProfileMutationQueue, and the switch cannot update this task's
-		// saved name because the task is not current yet. Re-read the serving name
-		// so the installed task's saved profile always equals the profile that
-		// serves it (StickyMatchesServing, PR 2649 review round 1). Same-task
-		// rehydration is excluded: its saved name is the task-local profile the
-		// activation above just restored and must be preserved as-is.
+		// saved name because the task is not current yet. Read the serving name
+		// and its configuration together at this one installation point so the
+		// installed task's saved profile always equals the profile that serves
+		// it (StickyMatchesServing, PR 2649 review round 1). getState() snapshots
+		// the provider settings before it awaits CloudService.instance
+		// .getAllowList(), and a switch can complete during that await, so
+		// re-reading only the name would re-stick the task to the new profile
+		// while new Task(...) still runs the old snapshot's settings; the reads
+		// below share one synchronous point, so no switch can land between them
+		// (PR 2649 review round 2). Same-task rehydration is excluded: its saved
+		// name is the task-local profile the activation above just restored and
+		// must be preserved as-is.
 		if (!isRehydratingCurrentTask) {
 			const servingApiConfigName = this.contextProxy.getValues().currentApiConfigName
 			if (
@@ -1685,16 +1695,26 @@ export class ClineProvider
 					`Re-sticking task ${historyItem.id} to provider profile '${servingApiConfigName}' selected while the restore was in flight.`,
 				)
 				historyItem.apiConfigName = servingApiConfigName
+				const servingProviderSettings = this.contextProxy.getProviderSettings()
+				if (!servingProviderSettings.apiProvider) {
+					// Keep the default getState() applies to settings without a provider.
+					const values = this.contextProxy.getValues()
+					servingProviderSettings.apiProvider =
+						values.apiProvider && !isRetiredProvider(values.apiProvider)
+							? values.apiProvider
+							: providerIdentifiers.anthropic
+				}
+				taskApiConfiguration = servingProviderSettings
 			}
 		}
 
 		const task = new Task({
 			provider: this,
-			apiConfiguration,
+			apiConfiguration: taskApiConfiguration,
 			enableCheckpoints,
 			checkpointTimeout,
-			consecutiveMistakeLimit: apiConfiguration.consecutiveMistakeLimit,
-			toolRepetitionSoftLimit: apiConfiguration.toolRepetitionSoftLimit,
+			consecutiveMistakeLimit: taskApiConfiguration.consecutiveMistakeLimit,
+			toolRepetitionSoftLimit: taskApiConfiguration.toolRepetitionSoftLimit,
 			historyItem,
 			experiments,
 			rootTask: historyItem.rootTask,
