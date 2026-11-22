@@ -1696,8 +1696,11 @@ export class ClineProvider
 				)
 				historyItem.apiConfigName = servingApiConfigName
 				const servingProviderSettings = this.contextProxy.getProviderSettings()
-				if (!servingProviderSettings.apiProvider) {
-					// Keep the default getState() applies to settings without a provider.
+				// Keep the default getState() applies to settings without a
+				// provider, including retired providers (PR 2649 review
+				// round 3): getState() filters retired providers to
+				// Anthropic, so the installed task must not serve one.
+				if (!servingProviderSettings.apiProvider || isRetiredProvider(servingProviderSettings.apiProvider)) {
 					const values = this.contextProxy.getValues()
 					servingProviderSettings.apiProvider =
 						values.apiProvider && !isRetiredProvider(values.apiProvider)

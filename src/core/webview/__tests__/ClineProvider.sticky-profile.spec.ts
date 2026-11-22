@@ -898,6 +898,125 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("gpt-current-256k")
 		})
 
+		it("install-point fallback keeps the current non-retired provider when the serving profile has no apiProvider (#970 review round 3)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id" },
+			])
+
+			// The serving profile's settings carry no apiProvider (for
+			// example a profile saved before a provider was selected) while
+			// the global values still hold a non-retired provider.
+			const getProviderSettingsSpy = vi
+				.spyOn(provider.contextProxy, "getProviderSettings")
+				.mockReturnValue({ apiModelId: "no-provider-model" } as ReturnType<ContextProxy["getProviderSettings"]>)
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			getProviderSettingsSpy.mockRestore()
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			// The fallback keeps the current non-retired provider instead of
+			// installing a task with an unset provider.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+		})
+
+		it("install-point fallback defaults to Anthropic when no non-retired provider is set (#970 review round 3)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+			await provider.contextProxy.setValue("apiProvider", undefined)
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id" },
+			])
+
+			// The switch lands during the getState allow-list await and
+			// leaves the serving profile without an apiProvider.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", undefined)
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			// With no provider set anywhere, the fallback installs the same
+			// Anthropic default getState() applies.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
+		})
+
+		it("install-point fallback treats a retired serving provider as unset (#970 review round 3)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id" },
+			])
+
+			// The switch lands on a profile whose stored provider was later
+			// retired. Sanitization preserves retired providers, so the
+			// fallback itself must filter it like getState() does.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", "groq")
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
+		})
+
 		it("should not restore an empty task apiConfigName profile from history", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
