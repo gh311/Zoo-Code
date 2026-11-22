@@ -10,6 +10,7 @@
 \* Result: Fixed holds both invariants. Unfixed fails RestoreKeepsChosen after StartTask, StopTask, SwitchProfile("b"), RestoreTask. NoRestick fails StickyMatchesServing on the same trace.
 \* Not modeled: the profile list (a profile always exists), the mode-based restore path (it runs only when the task has no saved profile), the webview (it reads the active profile, an oracle), and the switch during a running task (the code already keeps that task in sync).
 \* Cost: TLC runs in under 1 second. Agent time is not measured.
+\* Findings: issue thread (root cause, fix direction) and the closed PR #973 review: covered=2 (F1 restore revert, F2 stale sticky name), added=0, gap=0. The PR review found no code issues.
 
 EXTENDS Naturals
 
