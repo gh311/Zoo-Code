@@ -5,9 +5,9 @@ import * as vscode from "vscode"
 import { makeCompositeDisposable } from "../../../test-utils/vscode"
 import { TelemetryService } from "@roo-code/telemetry"
 import { ClineProvider } from "../ClineProvider"
-import type { Task } from "../../task/Task"
+import { Task } from "../../task/Task"
 import { ContextProxy } from "../../config/ContextProxy"
-import type { HistoryItem } from "@roo-code/types"
+import type { HistoryItem, ProviderName } from "@roo-code/types"
 import { providerIdentifiers } from "@roo-code/types/provider-identifiers"
 
 vi.mock("vscode", () => ({
@@ -623,6 +623,12 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			}
 
 			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+			// Seed the active settings the current profile's activation would have
+			// written: a distinct provider and model, so stale settings supplied under
+			// the correct profile name cannot pass the assertions below
+			// (PR 2649 review round 1).
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+			await provider.contextProxy.setValue("apiModelId", "gpt-current-256k")
 
 			const activateProviderProfileSpy = vi
 				.spyOn(provider, "activateProviderProfile")
@@ -641,6 +647,13 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			// The task's saved profile is corrected, so the restored task and its
 			// header context limit follow the user's current profile.
 			expect(historyItem.apiConfigName).toBe("current-profile")
+
+			// The restored task serves the current profile's exact settings, never
+			// the saved profile's configuration.
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("gpt-current-256k")
+			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("claude-saved-128k")
 		})
 
 		it("restores the saved profile when the user has not switched since the task stopped", async () => {
@@ -662,6 +675,9 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 
 			// The user's active profile still matches the task's saved profile.
 			await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
+			// The saved profile's active settings, as its earlier activation wrote them.
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.anthropic)
+			await provider.contextProxy.setValue("apiModelId", "claude-saved-128k")
 
 			const activateProviderProfileSpy = vi
 				.spyOn(provider, "activateProviderProfile")
@@ -678,6 +694,11 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 				{ persistModeConfig: false, persistTaskHistory: false, expectedCurrentTaskId: historyItem.id },
 			)
 			expect(historyItem.apiConfigName).toBe("saved-profile")
+
+			// The restored task serves the saved profile's exact settings.
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("claude-saved-128k")
 		})
 
 		// Property test from the StickyProfileRestore invariants: for every
@@ -687,6 +708,14 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
 			const profiles = ["profile-a", "profile-b", "profile-c"]
+			// Each profile carries distinct active settings, so a restore that
+			// supplies another profile's configuration under the correct name
+			// fails the assertions below (PR 2649 review round 1).
+			const settingsFor: Record<string, { apiProvider: ProviderName; apiModelId: string }> = {
+				"profile-a": { apiProvider: providerIdentifiers.anthropic, apiModelId: "model-a-128k" },
+				"profile-b": { apiProvider: providerIdentifiers.openai, apiModelId: "model-b-256k" },
+				"profile-c": { apiProvider: providerIdentifiers.openrouter, apiModelId: "model-c-512k" },
+			}
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue(
 				profiles.map((name) => ({ name, id: `${name}-id`, apiProvider: providerIdentifiers.anthropic })),
 			)
@@ -694,6 +723,8 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			for (const saved of profiles) {
 				for (const current of profiles) {
 					await provider.contextProxy.setValue("currentApiConfigName", current)
+					await provider.contextProxy.setValue("apiProvider", settingsFor[current].apiProvider)
+					await provider.contextProxy.setValue("apiModelId", settingsFor[current].apiModelId)
 
 					const historyItem: HistoryItem = {
 						id: `task-${profiles.indexOf(saved)}-${profiles.indexOf(current)}`,
@@ -725,9 +756,74 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 					// the profile that serves it.
 					expect(historyItem.apiConfigName).toBe(current)
 
+					// The restored task serves the current profile's exact settings,
+					// never the saved profile's configuration.
+					const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+					expect(taskOptions?.apiConfiguration?.apiProvider).toBe(settingsFor[current].apiProvider)
+					expect(taskOptions?.apiConfiguration?.apiModelId).toBe(settingsFor[current].apiModelId)
+					if (saved !== current) {
+						expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe(settingsFor[saved].apiModelId)
+					}
+
 					activateProviderProfileSpy.mockRestore()
 				}
 			}
+		})
+
+		it("re-sticks to the profile selected while the restore was in flight (#970 review round 1)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// The task last ran on "saved-profile"; the user switched to
+			// "current-profile" after it stopped.
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openrouter },
+			])
+			const activateProviderProfileSpy = vi
+				.spyOn(provider, "activateProviderProfile")
+				.mockResolvedValue(undefined)
+
+			// Profile switches run on providerProfileMutationQueue while restores
+			// run on historyTaskCreationQueue, so a switch can interleave between
+			// the restore's profile decision and its getState await. Simulate that
+			// switch: the user picks "switched-profile" while the restore is in
+			// flight, and the switch cannot write the restoring task's saved name
+			// because the task is not current yet.
+			const realGetState = provider.getState.bind(provider)
+			const getStateSpy = vi.spyOn(provider, "getState").mockImplementation(async (options) => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				return realGetState(options)
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			getStateSpy.mockRestore()
+
+			// The decision kept the user's profile and activated nothing stale.
+			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
+
+			// The installed task is re-stuck to the profile selected while the
+			// restore was in flight, so its saved name matches what serves it.
+			expect(historyItem.apiConfigName).toBe("switched-profile")
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			expect(taskOptions?.historyItem?.apiConfigName).not.toBe("current-profile")
 		})
 
 		it("should not restore an empty task apiConfigName profile from history", async () => {
@@ -962,6 +1058,76 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(logSpy).toHaveBeenCalledWith(
 				expect.stringContaining("Provider profile 'deleted-profile' from history no longer exists"),
 			)
+		})
+	})
+
+	describe("cancelTaskInternal", () => {
+		it("preserves the task-local profile when rehydrating the cancelled current task (#970 review round 1)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// A delegated child can run a mode-specific task-local profile while the
+			// global profile stays unchanged (selectHandoffExecutionContext in
+			// src/core/task/providerHandoff.ts). The child is current when the user
+			// cancels it, so cancelTaskInternal rehydrates the same task in place.
+			const historyItem: HistoryItem = {
+				id: "child-task",
+				number: 1,
+				ts: Date.now(),
+				task: "Child task",
+				tokensIn: 0,
+				tokensOut: 0,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0,
+				mode: "code",
+				apiConfigName: "child-profile",
+			}
+			await provider.taskHistoryStore.upsert(historyItem)
+
+			const childTask = {
+				taskId: "child-task",
+				instanceId: "child-instance-1",
+				rootTask: undefined,
+				parentTask: undefined,
+				parentTaskId: undefined,
+				setAbortReason: vi.fn(),
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn().mockResolvedValue(undefined),
+				requestAbandon: vi.fn(),
+				emit: vi.fn(),
+			}
+			await provider.addClineToStack(childTask as unknown as Task)
+
+			// The global profile never changed: it is still the profile the parent
+			// runs on, and it differs from the child's task-local profile.
+			await provider.contextProxy.setValue("currentApiConfigName", "global-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "child-profile", id: "child-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "global-profile", id: "global-profile-id", apiProvider: providerIdentifiers.openai },
+			])
+			const activateProviderProfileSpy = vi
+				.spyOn(provider, "activateProviderProfile")
+				.mockResolvedValue(undefined)
+
+			await (provider as unknown as { cancelTaskInternal: (task: Task) => Promise<void> }).cancelTaskInternal(
+				childTask as unknown as Task,
+			)
+
+			// Cancellation rehydrates the SAME task, so the keep-current override
+			// must not fire: the task-local profile is restored, not replaced by
+			// the unchanged global profile.
+			expect(activateProviderProfileSpy).toHaveBeenCalledWith(
+				{ name: "child-profile" },
+				expect.objectContaining({ persistTaskHistory: false }),
+			)
+			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "global-profile" }, expect.anything())
+
+			// The rehydrated task keeps the task-local profile name.
+			expect(historyItem.apiConfigName).toBe("child-profile")
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("child-profile")
+			expect(taskOptions?.historyItem?.apiConfigName).not.toBe("global-profile")
 		})
 	})
 

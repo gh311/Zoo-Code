@@ -1607,9 +1607,19 @@ export class ClineProvider
 			// The user may have switched profiles after this task stopped (#970).
 			// A restore must not revert that switch. Keep the current profile and
 			// re-stick the task to it so the next restore serves the same profile.
+			// Same-task rehydration (cancelTaskInternal's flicker-free path) is
+			// excluded: a delegated child can run a mode-specific task-local profile
+			// while the global profile stays unchanged, and cancelling it must keep
+			// that task-local profile instead of replacing it with the global one
+			// (PR 2649 review round 1). This override only guards explicit history
+			// restoration after a user profile switch.
 			const currentApiConfigName = this.contextProxy.getValues().currentApiConfigName
 
-			if (currentApiConfigName && currentApiConfigName !== historyItem.apiConfigName) {
+			if (
+				currentApiConfigName &&
+				!isRehydratingCurrentTask &&
+				currentApiConfigName !== historyItem.apiConfigName
+			) {
 				this.log(
 					`Keeping current provider profile '${currentApiConfigName}' instead of restoring stale profile '${historyItem.apiConfigName}' for task ${historyItem.id}.`,
 				)
@@ -1655,6 +1665,29 @@ export class ClineProvider
 
 		const { apiConfiguration, enableCheckpoints, checkpointTimeout, experiments, diffFuzzyThreshold } =
 			await this.getState()
+
+		// A profile switch can run between the decision above and this point:
+		// restores run on historyTaskCreationQueue while switches run on
+		// providerProfileMutationQueue, and the switch cannot update this task's
+		// saved name because the task is not current yet. Re-read the serving name
+		// so the installed task's saved profile always equals the profile that
+		// serves it (StickyMatchesServing, PR 2649 review round 1). Same-task
+		// rehydration is excluded: its saved name is the task-local profile the
+		// activation above just restored and must be preserved as-is.
+		if (!isRehydratingCurrentTask) {
+			const servingApiConfigName = this.contextProxy.getValues().currentApiConfigName
+			if (
+				servingApiConfigName &&
+				historyItem.apiConfigName &&
+				servingApiConfigName !== historyItem.apiConfigName
+			) {
+				this.log(
+					`Re-sticking task ${historyItem.id} to provider profile '${servingApiConfigName}' selected while the restore was in flight.`,
+				)
+				historyItem.apiConfigName = servingApiConfigName
+			}
+		}
+
 		const task = new Task({
 			provider: this,
 			apiConfiguration,
