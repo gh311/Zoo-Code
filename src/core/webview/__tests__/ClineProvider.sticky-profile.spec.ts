@@ -655,12 +655,14 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
 
 			// The task's saved profile is corrected, so the restored task and its
-			// header context limit follow the user's current profile.
-			expect(historyItem.apiConfigName).toBe("current-profile")
+			// header context limit follow the user's current profile. The
+			// correction lives on the copy handed to the Task (round 4: the
+			// cached entry is never mutated in place).
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("current-profile")
 
 			// The restored task serves the current profile's exact settings, never
 			// the saved profile's configuration.
-			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
 			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("gpt-current-256k")
 			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("claude-saved-128k")
@@ -763,12 +765,13 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 					}
 
 					// StickyMatchesServing: the restored task's saved profile equals
-					// the profile that serves it.
-					expect(historyItem.apiConfigName).toBe(current)
+					// the profile that serves it. The name correction travels on
+					// the copy handed to the Task (round 4: no in-place mutation).
+					const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+					expect(taskOptions?.historyItem?.apiConfigName).toBe(current)
 
 					// The restored task serves the current profile's exact settings,
 					// never the saved profile's configuration.
-					const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 					expect(taskOptions?.apiConfiguration?.apiProvider).toBe(settingsFor[current].apiProvider)
 					expect(taskOptions?.apiConfiguration?.apiModelId).toBe(settingsFor[current].apiModelId)
 					if (saved !== current) {
@@ -830,7 +833,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 
 			// The installed task is re-stuck to the profile selected while the
 			// restore was in flight, so its saved name matches what serves it.
-			expect(historyItem.apiConfigName).toBe("switched-profile")
+			// The name travels on the copy handed to the Task (round 4).
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
 			expect(taskOptions?.historyItem?.apiConfigName).not.toBe("current-profile")
@@ -887,7 +890,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
 
 			// The installed task records the profile selected during the await...
-			expect(historyItem.apiConfigName).toBe("switched-profile")
+			// (on the copy handed to the Task — round 4: no in-place mutation)
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
 
@@ -1028,6 +1031,59 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
 			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
+		})
+
+		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			// The object the caller (and the history cache) holds.
+			const cachedRef = historyItem
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openrouter },
+			])
+
+			// Spy WITHOUT stubbing: the real store write path must run.
+			const updateTaskHistorySpy = vi.spyOn(provider, "updateTaskHistory")
+
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openrouter)
+				await provider.contextProxy.setValue("apiModelId", "switched-512k")
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			// The installed Task carries the re-stuck name...
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+
+			// ...while the cached entry object was never mutated in place.
+			expect(cachedRef.apiConfigName).toBe("saved-profile")
+
+			// The re-stuck name went through the store's write path —
+			// the final write records the serving profile...
+			expect(updateTaskHistorySpy).toHaveBeenLastCalledWith(
+				expect.objectContaining({ id: "test-task-id", apiConfigName: "switched-profile" }),
+			)
+			// ...and the store's persisted/cached record carries it.
+			expect(provider.taskHistoryStore.get("test-task-id")?.apiConfigName).toBe("switched-profile")
 		})
 
 		it("should not restore an empty task apiConfigName profile from history", async () => {

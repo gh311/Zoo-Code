@@ -1623,7 +1623,19 @@ export class ClineProvider
 				this.log(
 					`Keeping current provider profile '${currentApiConfigName}' instead of restoring stale profile '${historyItem.apiConfigName}' for task ${historyItem.id}.`,
 				)
-				historyItem.apiConfigName = currentApiConfigName
+				// Persist the re-stuck name through the store's write path and
+				// hand the Task a copy, instead of mutating the cached entry in
+				// place (#970 review round 4: persistence integrity).
+				historyItem = { ...historyItem, apiConfigName: currentApiConfigName }
+				try {
+					await this.updateTaskHistory(historyItem)
+				} catch (error) {
+					this.log(
+						`Failed to persist re-stuck provider profile '${currentApiConfigName}' for task ${historyItem.id}: ${
+							error instanceof Error ? error.message : String(error)
+						}. Continuing with the in-memory re-stuck name.`,
+					)
+				}
 			} else {
 				const listApiConfig = await this.providerSettingsManager.listConfig()
 				// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
@@ -1694,7 +1706,19 @@ export class ClineProvider
 				this.log(
 					`Re-sticking task ${historyItem.id} to provider profile '${servingApiConfigName}' selected while the restore was in flight.`,
 				)
-				historyItem.apiConfigName = servingApiConfigName
+				// Persist through the store's write path and hand the Task a
+				// copy, instead of mutating the cached entry in place (#970
+				// review round 4: persistence integrity).
+				historyItem = { ...historyItem, apiConfigName: servingApiConfigName }
+				try {
+					await this.updateTaskHistory(historyItem)
+				} catch (error) {
+					this.log(
+						`Failed to persist re-stuck provider profile '${servingApiConfigName}' for task ${historyItem.id}: ${
+							error instanceof Error ? error.message : String(error)
+						}. Continuing with the in-memory re-stuck name.`,
+					)
+				}
 				const servingProviderSettings = this.contextProxy.getProviderSettings()
 				// Keep the default getState() applies to settings without a
 				// provider, including retired providers (PR 2649 review
