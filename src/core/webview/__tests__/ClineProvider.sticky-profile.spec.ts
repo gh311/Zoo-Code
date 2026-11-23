@@ -1033,6 +1033,61 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
 		})
 
+		it("reads the serving name and settings at one synchronous point across the history write (#970 review round 5)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			// Decision point sees no drift: the saved name still matches.
+			await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openai },
+				{ name: "final-profile", id: "final-profile-id", apiProvider: providerIdentifiers.openrouter },
+			])
+
+			// Switch #1 lands during the getState allow-list await: the
+			// installation point must re-stick to switched-profile.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+				await provider.contextProxy.setValue("apiModelId", "switched-256k")
+			})
+
+			// Switch #2 lands during the re-stick's own history write: the
+			// name was captured before the await, so the Task must keep the
+			// switched-profile settings captured with that name — not pick
+			// up final-profile's settings after the write resolves.
+			vi.spyOn(provider, "updateTaskHistory").mockImplementationOnce(async (item) => {
+				await provider.contextProxy.setValue("currentApiConfigName", "final-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openrouter)
+				await provider.contextProxy.setValue("apiModelId", "switched-512k")
+				return [item]
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			// The settings pair with the captured name, not the post-write
+			// profile.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-256k")
+			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("switched-512k")
+		})
+
 		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
