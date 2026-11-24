@@ -1146,103 +1146,122 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
 		})
 
-		it("keeps the task on the current profile when the re-stick write fails at the keep-current path (#970 review round 8)", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
+		it.each([
+			{ rejection: new Error("disk full"), reported: "disk full", label: "Error" },
+			{ rejection: "raw store failure", reported: "raw store failure", label: "non-Error" },
+		])(
+			"keeps the task on the current profile when the re-stick write fails at the keep-current path ($label, #970 review rounds 8+10)",
+			async ({ rejection, reported }) => {
+				await provider.resolveWebviewView(mockWebviewView)
 
-			// Same fixture as the keep-current test: the task last ran on
-			// "saved-profile"; the user has since switched to "current-profile".
-			const historyItem: HistoryItem = {
-				id: "test-task-id",
-				number: 1,
-				ts: Date.now(),
-				task: "Test task",
-				tokensIn: 100,
-				tokensOut: 200,
-				cacheWrites: 0,
-				cacheReads: 0,
-				totalCost: 0.001,
-				mode: "code",
-				apiConfigName: "saved-profile",
-			}
-			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
-			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
-			await provider.contextProxy.setValue("apiModelId", "gpt-current-256k")
-
-			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
-				{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
-			])
-
-			// The re-stick write fails at the store.
-			const logSpy = vi.spyOn(provider, "log")
-			vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(new Error("disk full"))
-
-			await provider.createTaskWithHistoryItem(historyItem)
-
-			// The failure is logged with the re-stuck name, and restoration
-			// continues on the in-memory re-stuck name.
-			expect(logSpy).toHaveBeenCalledWith(
-				expect.stringContaining("Failed to persist re-stuck provider profile 'current-profile'"),
-			)
-
-			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			expect(taskOptions?.historyItem?.apiConfigName).toBe("current-profile")
-			// The task serves the current profile's exact settings.
-			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
-			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("gpt-current-256k")
-		})
-
-		it("installs the re-stuck pair when the re-stick write fails at the install point (#970 review round 8)", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
-
-			const historyItem: HistoryItem = {
-				id: "test-task-id",
-				number: 1,
-				ts: Date.now(),
-				task: "Test task",
-				tokensIn: 100,
-				tokensOut: 200,
-				cacheWrites: 0,
-				cacheReads: 0,
-				totalCost: 0.001,
-				mode: "code",
-				apiConfigName: "saved-profile",
-			}
-			await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
-
-			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
-				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openai },
-			])
-
-			// A switch lands mid-restore; every bounded-round write then
-			// rejects at the store.
-			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
-				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				// Same fixture as the keep-current test: the task last ran on
+				// "saved-profile"; the user has since switched to "current-profile".
+				const historyItem: HistoryItem = {
+					id: "test-task-id",
+					number: 1,
+					ts: Date.now(),
+					task: "Test task",
+					tokensIn: 100,
+					tokensOut: 200,
+					cacheWrites: 0,
+					cacheReads: 0,
+					totalCost: 0.001,
+					mode: "code",
+					apiConfigName: "saved-profile",
+				}
+				await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
 				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
-				await provider.contextProxy.setValue("apiModelId", "switched-256k")
-			})
+				await provider.contextProxy.setValue("apiModelId", "gpt-current-256k")
 
-			const logSpy = vi.spyOn(provider, "log")
-			vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(new Error("disk full"))
+				vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+					{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+					{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
+				])
 
-			await provider.createTaskWithHistoryItem(historyItem)
+				// The re-stick write fails at the store, with or without an Error.
+				const logSpy = vi.spyOn(provider, "log")
+				vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(rejection)
 
-			// The failing write logs once, but restoration is not aborted:
-			// the round already re-stuck the in-memory name, so the next
-			// round sees no difference and the loop terminates.
-			const persistFailures = logSpy.mock.calls.filter(([m]) =>
-				String(m).includes("Failed to persist re-stuck provider profile 'switched-profile'"),
-			)
-			expect(persistFailures.length).toBe(1)
+				await provider.createTaskWithHistoryItem(historyItem)
 
-			// The Task still installs with the re-stuck name and the captured
-			// serving settings.
-			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
-			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
-			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-256k")
-		})
+				// The failure is logged with the re-stuck name and the store's
+				// report, and restoration continues on the in-memory re-stuck name.
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining("Failed to persist re-stuck provider profile 'current-profile'"),
+				)
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining(
+						`for task test-task-id: ${reported}. Continuing with the in-memory re-stuck name.`,
+					),
+				)
+
+				const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+				expect(taskOptions?.historyItem?.apiConfigName).toBe("current-profile")
+				// The task serves the current profile's exact settings.
+				expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+				expect(taskOptions?.apiConfiguration?.apiModelId).toBe("gpt-current-256k")
+			},
+		)
+
+		it.each([
+			{ rejection: new Error("disk full"), reported: "disk full", label: "Error" },
+			{ rejection: "raw store failure", reported: "raw store failure", label: "non-Error" },
+		])(
+			"installs the re-stuck pair when the re-stick write fails at the install point ($label, #970 review rounds 8+10)",
+			async ({ rejection, reported }) => {
+				await provider.resolveWebviewView(mockWebviewView)
+
+				const historyItem: HistoryItem = {
+					id: "test-task-id",
+					number: 1,
+					ts: Date.now(),
+					task: "Test task",
+					tokensIn: 100,
+					tokensOut: 200,
+					cacheWrites: 0,
+					cacheReads: 0,
+					totalCost: 0.001,
+					mode: "code",
+					apiConfigName: "saved-profile",
+				}
+				await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
+
+				vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+					{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+					{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openai },
+				])
+
+				// A switch lands mid-restore; every bounded-round write then
+				// rejects at the store, with or without an Error.
+				cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+					await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+					await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+					await provider.contextProxy.setValue("apiModelId", "switched-256k")
+				})
+
+				const logSpy = vi.spyOn(provider, "log")
+				vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(rejection)
+
+				await provider.createTaskWithHistoryItem(historyItem)
+
+				// The failing write logs once, but restoration is not aborted:
+				// the round already re-stuck the in-memory name, so the next
+				// round sees no difference and the loop terminates.
+				const persistFailures = logSpy.mock.calls.filter(([m]) =>
+					String(m).includes(
+						`Failed to persist re-stuck provider profile 'switched-profile' for task test-task-id: ${reported}`,
+					),
+				)
+				expect(persistFailures.length).toBe(1)
+
+				// The Task still installs with the re-stuck name and the captured
+				// serving settings.
+				const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+				expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+				expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+				expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-256k")
+			},
+		)
 
 		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
@@ -1295,6 +1314,72 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			)
 			// ...and the store's persisted/cached record carries it.
 			expect(provider.taskHistoryStore.get("test-task-id")?.apiConfigName).toBe("switched-profile")
+		})
+
+		// The nested delegation finished its innermost child, so the parent
+		// restores automatically. This is exactly the call
+		// reopenParentFromDelegation makes (PR 2649 review round 10).
+		it("keeps the parent's saved profile when a delegated parent restores automatically (#970 review round 10)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// The parent last ran on "parent-profile". While the child ran, the
+			// user switched the global profile to "global-profile".
+			const parentHistory: HistoryItem = {
+				id: "parent-task",
+				number: 1,
+				ts: Date.now(),
+				task: "Parent task",
+				tokensIn: 0,
+				tokensOut: 0,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0,
+				mode: "code",
+				apiConfigName: "parent-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "global-profile")
+			// The global profile's settings, as its activation wrote them.
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+			await provider.contextProxy.setValue("apiModelId", "gpt-global-256k")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "parent-profile", id: "parent-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "global-profile", id: "global-profile-id", apiProvider: providerIdentifiers.openai },
+			])
+
+			// The activation hands the restored parent the saved profile's
+			// settings, as the real activateProviderProfile would.
+			const activateProviderProfileSpy = vi
+				.spyOn(provider, "activateProviderProfile")
+				.mockImplementation(async (args) => {
+					if (!("name" in args)) {
+						return
+					}
+					await provider.contextProxy.setValue("currentApiConfigName", args.name)
+					await provider.contextProxy.setValue("apiProvider", providerIdentifiers.anthropic)
+					await provider.contextProxy.setValue("apiModelId", "claude-parent-128k")
+				})
+
+			await provider.createTaskWithHistoryItem(parentHistory, {
+				startTask: false,
+				profileRestorePolicy: "retain-saved",
+			})
+
+			// The automatic restoration reactivates the parent's saved profile...
+			expect(activateProviderProfileSpy).toHaveBeenCalledWith(
+				{ name: "parent-profile" },
+				{ persistModeConfig: false, persistTaskHistory: false, expectedCurrentTaskId: "parent-task" },
+			)
+
+			// ...and the restored parent keeps its saved profile name and
+			// settings, not the global profile that was current while the
+			// child ran.
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("parent-profile")
+			expect(taskOptions?.historyItem?.apiConfigName).not.toBe("global-profile")
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.anthropic)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("claude-parent-128k")
+			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("gpt-global-256k")
 		})
 
 		it("should not restore an empty task apiConfigName profile from history", async () => {
@@ -1838,41 +1923,49 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 	})
 
 	describe("Profile restoration with activateProfile failure", () => {
-		it("should continue task restoration even if activateProviderProfile fails", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
+		it.each([
+			{ rejection: new Error("Activation failed"), reported: "Activation failed", label: "Error" },
+			{ rejection: "raw activation failure", reported: "raw activation failure", label: "non-Error" },
+		])(
+			"should continue task restoration even if activateProviderProfile fails ($label, #970 review round 10)",
+			async ({ rejection, reported }) => {
+				await provider.resolveWebviewView(mockWebviewView)
 
-			// Create a history item with saved provider profile
-			const historyItem: HistoryItem = {
-				id: "test-task-id",
-				number: 1,
-				ts: Date.now(),
-				task: "Test task",
-				tokensIn: 100,
-				tokensOut: 200,
-				cacheWrites: 0,
-				cacheReads: 0,
-				totalCost: 0.001,
-				apiConfigName: "failing-profile",
-			}
+				// Create a history item with saved provider profile
+				const historyItem: HistoryItem = {
+					id: "test-task-id",
+					number: 1,
+					ts: Date.now(),
+					task: "Test task",
+					tokensIn: 100,
+					tokensOut: 200,
+					cacheWrites: 0,
+					cacheReads: 0,
+					totalCost: 0.001,
+					apiConfigName: "failing-profile",
+				}
 
-			// Mock providerSettingsManager.listConfig to return the profile
-			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "failing-profile", id: "failing-profile-id", apiProvider: providerIdentifiers.anthropic },
-			])
+				// Mock providerSettingsManager.listConfig to return the profile
+				vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+					{ name: "failing-profile", id: "failing-profile-id", apiProvider: providerIdentifiers.anthropic },
+				])
 
-			// Mock activateProviderProfile to throw error
-			vi.spyOn(provider, "activateProviderProfile").mockRejectedValue(new Error("Activation failed"))
+				// Mock activateProviderProfile to reject, with or without an Error
+				vi.spyOn(provider, "activateProviderProfile").mockRejectedValue(rejection)
 
-			// Mock log to verify error is logged
-			const logSpy = vi.spyOn(provider, "log")
+				// Mock log to verify error is logged
+				const logSpy = vi.spyOn(provider, "log")
 
-			// Initialize task with history item - should not throw even though activation fails
-			await expect(provider.createTaskWithHistoryItem(historyItem)).resolves.not.toThrow()
+				// Initialize task with history item - should not throw even though activation fails
+				await expect(provider.createTaskWithHistoryItem(historyItem)).resolves.not.toThrow()
 
-			// Verify error was logged
-			expect(logSpy).toHaveBeenCalledWith(
-				expect.stringContaining("Failed to restore API configuration 'failing-profile' for task"),
-			)
-		})
+				// Verify error was logged, with the store's report either way
+				expect(logSpy).toHaveBeenCalledWith(
+					expect.stringContaining(
+						`Failed to restore API configuration 'failing-profile' for task: ${reported}`,
+					),
+				)
+			},
+		)
 	})
 })

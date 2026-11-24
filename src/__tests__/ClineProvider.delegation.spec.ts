@@ -191,7 +191,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 
 		expect(child.run).not.toHaveBeenCalled()
 		expect(deleteTaskWithId).toHaveBeenCalledWith("child-1", false)
-		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(parentHistoryItem)
+		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(parentHistoryItem, {
+			profileRestorePolicy: "retain-saved",
+		})
 	})
 
 	it("persists parent delegation metadata via atomicReadAndUpdate and emits TaskDelegated", async () => {
@@ -804,7 +806,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		expect(removeClineFromStack).toHaveBeenNthCalledWith(1)
 		expect(removeClineFromStack).toHaveBeenNthCalledWith(2)
 		expect(deleteTaskWithId).toHaveBeenCalledWith("child-1", false)
-		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(parentHistoryItem)
+		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(parentHistoryItem, {
+			profileRestorePolicy: "retain-saved",
+		})
 	})
 
 	it("settles an interrupted parent's pending action when delegation is rejected", async () => {
@@ -877,6 +881,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 				status: "interrupted",
 				pendingAction: undefined,
 			}),
+			{ profileRestorePolicy: "retain-saved" },
 		)
 	})
 
@@ -941,7 +946,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		expect(transitionError).toBeInstanceOf(LifecycleTransitionError)
 		expect(clearPendingActionIfMatching).not.toHaveBeenCalled()
 		expect(deleteTaskWithId).toHaveBeenCalledWith("child-1", false)
-		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(interruptedParent)
+		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(interruptedParent, {
+			profileRestorePolicy: "retain-saved",
+		})
 	})
 
 	it("does not settle a pending action after an unrelated persistence failure", async () => {
@@ -1003,7 +1010,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		expect(clearPendingActionIfMatching).not.toHaveBeenCalled()
 		expect(interruptedParent.pendingAction).toBe(pendingAction)
 		expect(provider.deleteTaskWithId).toHaveBeenCalledWith("child-1", false)
-		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(interruptedParent)
+		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(interruptedParent, {
+			profileRestorePolicy: "retain-saved",
+		})
 	})
 
 	it("does not restore a rejected pending action when its settlement write fails", async () => {
@@ -1201,7 +1210,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		expect(clearPendingActionIfMatching).toHaveBeenCalledTimes(1)
 		expect(replacedParent.pendingAction).toEqual(replacementAction)
 		expect(provider.deleteTaskWithId).toHaveBeenCalledWith("child-1", false)
-		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(replacedParent)
+		expect(createTaskWithHistoryItem).toHaveBeenCalledWith(replacedParent, { profileRestorePolicy: "retain-saved" })
 	})
 
 	it("keeps directory cleanup and parent restoration when the child history lock failure is swallowed", async () => {
@@ -1291,6 +1300,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			expect(clearPendingActionIfMatching).toHaveBeenCalledWith("parent-1", "create-action")
 			expect(createTaskWithHistoryItem).toHaveBeenCalledWith(
 				expect.objectContaining({ status: "interrupted", pendingAction: undefined }),
+				{ profileRestorePolicy: "retain-saved" },
 			)
 		} finally {
 			await fs.rm(globalStorageDir, { recursive: true, force: true }).catch(() => {})

@@ -241,6 +241,16 @@ function removeTaskEventListeners(listeners: WeakMap<Task, Array<() => void>>, t
 	}
 }
 
+/**
+ * Which provider profile a task restore keeps (#970 review round 10).
+ * "retain-current" keeps the user's current profile: explicit history
+ * navigation must not revert a profile switch made after the task stopped.
+ * "retain-saved" reactivates the profile saved in the history item:
+ * automatic parent restoration and delegation rollback must resume the
+ * parent on its own profile, not on a global switch made while the child ran.
+ */
+export type ProviderProfileRestorePolicy = "retain-current" | "retain-saved"
+
 export class ClineProvider
 	extends EventEmitter<TaskProviderEvents>
 	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
@@ -1473,7 +1483,7 @@ export class ClineProvider
 
 	public createTaskWithHistoryItem(
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
-		options?: { startTask?: boolean },
+		options?: { startTask?: boolean; profileRestorePolicy?: ProviderProfileRestorePolicy },
 	): Promise<Task> {
 		// History navigation can arrive concurrently (for example, two rapid
 		// showTaskWithId messages). Serialize the full eviction/installation
@@ -1521,7 +1531,7 @@ export class ClineProvider
 
 	private async createTaskWithHistoryItemUnlocked(
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
-		options?: { startTask?: boolean },
+		options?: { startTask?: boolean; profileRestorePolicy?: ProviderProfileRestorePolicy },
 	): Promise<Task> {
 		const isCliRuntime = process.env.ROO_CLI_RUNTIME === "1"
 		// CLI injects runtime provider settings from command flags/env at startup.
@@ -1611,12 +1621,18 @@ export class ClineProvider
 			// excluded: a delegated child can run a mode-specific task-local profile
 			// while the global profile stays unchanged, and cancelling it must keep
 			// that task-local profile instead of replacing it with the global one
-			// (PR 2649 review round 1). This override only guards explicit history
-			// restoration after a user profile switch.
+			// (PR 2649 review round 1). The keep-current override only guards the
+			// retain-current policy, the default for explicit history navigation.
+			// Callers that restore a parent automatically (reopenParentFromDelegation
+			// and the delegation rollback) pass retain-saved instead: the parent must
+			// resume on its own saved profile, not on a global switch made while the
+			// child ran (PR 2649 review round 10).
+			const profileRestorePolicy = options?.profileRestorePolicy ?? "retain-current"
 			const currentApiConfigName = this.contextProxy.getValues().currentApiConfigName
 
 			if (
 				currentApiConfigName &&
+				profileRestorePolicy === "retain-current" &&
 				!isRehydratingCurrentTask &&
 				currentApiConfigName !== historyItem.apiConfigName
 			) {
@@ -5168,7 +5184,11 @@ export class ClineProvider
 				// settles interrupted create-subtask actions before allowing replay.
 				if (!settlementFailed) {
 					const { historyItem: parentHistory } = await this.getTaskWithId(parentTaskId)
-					await this.createTaskWithHistoryItem(parentHistory)
+					// retain-saved: the rollback restores the parent automatically,
+					// so it must keep the parent's saved provider profile instead of
+					// inheriting a global switch made while the child ran
+					// (PR 2649 review round 10).
+					await this.createTaskWithHistoryItem(parentHistory, { profileRestorePolicy: "retain-saved" })
 				}
 			} catch (rollbackError) {
 				this.log(
@@ -5482,8 +5502,14 @@ export class ClineProvider
 			}
 
 			// 7) Reopen the parent from history as the sole active task (restores saved mode)
-			//    IMPORTANT: startTask=false to suppress resume-from-history ask scheduling
-			const parentInstance = await this.createTaskWithHistoryItem(updatedHistory, { startTask: false })
+			//    IMPORTANT: startTask=false to suppress resume-from-history ask scheduling.
+			//    retain-saved: this restore is automatic, so the parent keeps its saved
+			//    provider profile instead of inheriting a global switch made while the
+			//    child ran (PR 2649 review round 10).
+			const parentInstance = await this.createTaskWithHistoryItem(updatedHistory, {
+				startTask: false,
+				profileRestorePolicy: "retain-saved",
+			})
 
 			// 8) Inject restored histories into the in-memory instance before resuming
 			if (parentInstance) {

@@ -342,7 +342,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 				status: "active",
 				completedByChildId: "child-1",
 			}),
-			{ startTask: false },
+			{ startTask: false, profileRestorePolicy: "retain-saved" },
 		)
 	})
 
@@ -1156,7 +1156,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 				status: "active",
 				completedByChildId: "child-rpd02",
 			}),
-			{ startTask: false },
+			{ startTask: false, profileRestorePolicy: "retain-saved" },
 		)
 		await vi.waitFor(() => expect(taskHistoryStore.invalidate).toHaveBeenCalledWith("parent-rpd02"))
 		expect(parentInstance.resumeAfterDelegation).not.toHaveBeenCalled()

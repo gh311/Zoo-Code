@@ -79,7 +79,8 @@ describe("Nested delegation resume (A → B → C)", () => {
 			taskId: "C",
 		}
 
-		// History index: A is parent of B, B is parent of C
+		// History index: A is parent of B, B is parent of C. A and B each ran
+		// on their own provider profile before they delegated (#970 round 10).
 		const historyIndex: Record<string, HistoryItem> = {
 			A: {
 				id: "A",
@@ -95,6 +96,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 				totalCost: 0,
 				mode: "code",
 				workspace: "/tmp",
+				apiConfigName: "profile-a",
 			},
 			B: {
 				id: "B",
@@ -110,6 +112,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 				totalCost: 0,
 				mode: "code",
 				workspace: "/tmp",
+				apiConfigName: "profile-b",
 			},
 			C: {
 				id: "C",
@@ -132,22 +135,30 @@ describe("Nested delegation resume (A → B → C)", () => {
 			currentActiveId = undefined
 			currentTask = undefined
 		})
+		const reopenCalls: Array<{ id: string; apiConfigName?: string }> = []
 		const createTaskWithHistoryItem = vi
 			.fn()
-			.mockImplementation(async (historyItem: HistoryItem, opts?: { startTask?: boolean }) => {
-				// Assert startTask:false to avoid resume asks
-				expect(opts).toEqual(expect.objectContaining({ startTask: false }))
-				// Reopen the parent
-				currentActiveId = historyItem.id
-				// Return minimal parent instance with resumeAfterDelegation
-				currentTask = {
-					taskId: historyItem.id,
-					resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
-					overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
-					overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
-				}
-				return currentTask
-			})
+			.mockImplementation(
+				async (historyItem: HistoryItem, opts?: { startTask?: boolean; profileRestorePolicy?: string }) => {
+					// Assert startTask:false to avoid resume asks, and that the
+					// automatic restoration keeps the parent's saved profile
+					// (#970 review round 10).
+					expect(opts).toEqual(
+						expect.objectContaining({ startTask: false, profileRestorePolicy: "retain-saved" }),
+					)
+					reopenCalls.push({ id: historyItem.id, apiConfigName: historyItem.apiConfigName })
+					// Reopen the parent
+					currentActiveId = historyItem.id
+					// Return minimal parent instance with resumeAfterDelegation
+					currentTask = {
+						taskId: historyItem.id,
+						resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
+						overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
+						overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
+					}
+					return currentTask
+				},
+			)
 
 		const getTaskWithId = vi.fn(async (id: string) => {
 			if (!historyIndex[id]) throw new Error("Task not found")
@@ -318,5 +329,12 @@ describe("Nested delegation resume (A → B → C)", () => {
 		// Find a TaskDelegationCompleted matching A <- B
 		const hasAfromB = completedEvents.some(([, parentId, childId]) => parentId === "A" && childId === "B")
 		expect(hasAfromB).toBe(true)
+
+		// Each hop restored the parent automatically, so each reopened parent
+		// keeps its own saved profile name (PR 2649 review round 10).
+		expect(reopenCalls).toStrictEqual([
+			{ id: "B", apiConfigName: "profile-b" },
+			{ id: "A", apiConfigName: "profile-a" },
+		])
 	})
 })
