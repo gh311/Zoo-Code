@@ -1703,41 +1703,53 @@ export class ClineProvider
 				historyItem.apiConfigName &&
 				servingApiConfigName !== historyItem.apiConfigName
 			) {
-				// Capture the serving name AND its settings in one
-				// synchronous step: the history write below awaits, and a
-				// switch completing during that await would otherwise pair
-				// the pre-await name with the post-await profile's settings
-				// (PR 2649 review round 5). The spread keeps the fallback
-				// below from mutating the context's live settings object.
-				const servingProviderSettings = { ...this.contextProxy.getProviderSettings() }
-				// Keep the default getState() applies to settings without a
-				// provider, including retired providers (PR 2649 review
-				// round 3): getState() filters retired providers to
-				// Anthropic, so the installed task must not serve one.
-				if (!servingProviderSettings.apiProvider || isRetiredProvider(servingProviderSettings.apiProvider)) {
-					const values = this.contextProxy.getValues()
-					servingProviderSettings.apiProvider =
-						values.apiProvider && !isRetiredProvider(values.apiProvider)
-							? values.apiProvider
-							: providerIdentifiers.anthropic
-				}
-				taskApiConfiguration = servingProviderSettings
-				this.log(
-					`Re-sticking task ${historyItem.id} to provider profile '${servingApiConfigName}' selected while the restore was in flight.`,
-				)
-				// Persist through the store's write path and hand the Task a
-				// copy, instead of mutating the cached entry in place (#970
-				// review round 4: persistence integrity). This runs after the
-				// capture above so the await cannot split the pair.
-				historyItem = { ...historyItem, apiConfigName: servingApiConfigName }
-				try {
-					await this.updateTaskHistory(historyItem)
-				} catch (error) {
+				// Re-stick in rounds: each round captures the latest
+				// completed selection as ONE pair — name and settings read
+				// in the same synchronous step (round 5) — applies it, then
+				// awaits the history write. A switch that completes during
+				// that await updates the global state but cannot reach the
+				// restoring task (no current task yet), so the pair is
+				// stale the moment the write resolves; reconcile with the
+				// latest completed selection afterwards (round 7). Bounded:
+				// a switch completing during the final round's write loses
+				// that race by construction.
+				for (let reStickRound = 0; reStickRound < 3; reStickRound++) {
+					// Capture name AND settings in one synchronous step;
+					// the spread keeps the fallback below from mutating the
+					// context's live settings object.
+					const roundName = this.contextProxy.getValues().currentApiConfigName
+					if (!roundName || roundName === historyItem.apiConfigName) {
+						break
+					}
+					const roundSettings = { ...this.contextProxy.getProviderSettings() }
+					// Keep the default getState() applies to settings without a
+					// provider, including retired providers (round 3):
+					// getState() filters retired providers to Anthropic, so
+					// the installed task must not serve one.
+					if (!roundSettings.apiProvider || isRetiredProvider(roundSettings.apiProvider)) {
+						const values = this.contextProxy.getValues()
+						roundSettings.apiProvider =
+							values.apiProvider && !isRetiredProvider(values.apiProvider)
+								? values.apiProvider
+								: providerIdentifiers.anthropic
+					}
+					taskApiConfiguration = roundSettings
 					this.log(
-						`Failed to persist re-stuck provider profile '${servingApiConfigName}' for task ${historyItem.id}: ${
-							error instanceof Error ? error.message : String(error)
-						}. Continuing with the in-memory re-stuck name.`,
+						`Re-sticking task ${historyItem.id} to provider profile '${roundName}' selected while the restore was in flight.`,
 					)
+					// Persist through the store's write path and hand the
+					// Task a copy, instead of mutating the cached entry in
+					// place (round 4: persistence integrity).
+					historyItem = { ...historyItem, apiConfigName: roundName }
+					try {
+						await this.updateTaskHistory(historyItem)
+					} catch (error) {
+						this.log(
+							`Failed to persist re-stuck provider profile '${roundName}' for task ${historyItem.id}: ${
+								error instanceof Error ? error.message : String(error)
+							}. Continuing with the in-memory re-stuck name.`,
+						)
+					}
 				}
 			}
 		}

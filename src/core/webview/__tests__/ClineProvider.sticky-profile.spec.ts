@@ -1066,10 +1066,9 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 				await provider.contextProxy.setValue("apiModelId", "switched-256k")
 			})
 
-			// Switch #2 lands during the re-stick's own history write: the
-			// name was captured before the await, so the Task must keep the
-			// switched-profile settings captured with that name — not pick
-			// up final-profile's settings after the write resolves.
+			// Switch #2 lands during the re-stick's own history write. The
+			// captured pair stays consistent, and the post-write reconcile
+			// must adopt the latest completed selection as one pair.
 			vi.spyOn(provider, "updateTaskHistory").mockImplementationOnce(async (item) => {
 				await provider.contextProxy.setValue("currentApiConfigName", "final-profile")
 				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openrouter)
@@ -1080,12 +1079,71 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			await provider.createTaskWithHistoryItem(historyItem)
 
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
-			// The settings pair with the captured name, not the post-write
-			// profile.
-			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
-			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-256k")
-			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("switched-512k")
+			// The reconcile pass adopted the latest completed selection.
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("final-profile")
+			// ...as one consistent pair, not mixed with the earlier capture.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openrouter)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-512k")
+			expect(taskOptions?.apiConfiguration?.apiModelId).not.toBe("switched-256k")
+		})
+
+		it("chases a selection that lands during the reconcile write, bounded (#970 review round 7)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openai },
+				{ name: "final-profile", id: "final-profile-id", apiProvider: providerIdentifiers.openrouter },
+			])
+
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+				await provider.contextProxy.setValue("apiModelId", "switched-256k")
+			})
+
+			// Every history write drifts the selection forward: write #1
+			// sees switched→final, write #2 sees final→switched again, and
+			// write #3 stops the bounded loop. The task must carry the last
+			// captured pair, and the loop must terminate.
+			let writeCount = 0
+			vi.spyOn(provider, "updateTaskHistory").mockImplementation(async (item) => {
+				writeCount += 1
+				const next = writeCount % 2 === 1 ? "final-profile" : "switched-profile"
+				await provider.contextProxy.setValue("currentApiConfigName", next)
+				await provider.contextProxy.setValue(
+					"apiProvider",
+					next === "final-profile" ? providerIdentifiers.openrouter : providerIdentifiers.openai,
+				)
+				return [item]
+			})
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			expect(writeCount).toBeLessThanOrEqual(3)
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			// The task carries ONE consistent pair — whatever the last
+			// captured round produced.
+			const servedName = taskOptions?.historyItem?.apiConfigName
+			expect(servedName === "switched-profile" || servedName === "final-profile").toBe(true)
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(
+				servedName === "final-profile" ? providerIdentifiers.openrouter : providerIdentifiers.openai,
+			)
 		})
 
 		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
