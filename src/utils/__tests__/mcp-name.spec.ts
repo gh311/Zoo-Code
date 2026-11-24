@@ -108,20 +108,24 @@ describe("mcp-name utilities", () => {
 			expect(sanitizeMcpName("Server123")).toBe("Server123")
 		})
 
-		it("should remove dots and colons for AWS Bedrock compatibility", () => {
-			// Dots and colons are NOT allowed due to AWS Bedrock restrictions
-			expect(sanitizeMcpName("server.name")).toBe("servername")
+		it("replaces dots with underscores and removes colons for AWS Bedrock compatibility (#2338)", () => {
+			// Dots and colons are NOT allowed due to AWS Bedrock restrictions.
+			// Dots become underscores: replacement keeps the name readable and
+			// reversible, and the fuzzy comparison matches it back to the real
+			// name. Colons and other characters stay deleted.
+			expect(sanitizeMcpName("server.name")).toBe("server_name")
 			expect(sanitizeMcpName("server:name")).toBe("servername")
 			// Hyphens are preserved
-			expect(sanitizeMcpName("awslabs.aws-documentation-mcp-server")).toBe("awslabsaws-documentation-mcp-server")
+			expect(sanitizeMcpName("awslabs.aws-documentation-mcp-server")).toBe("awslabs_aws-documentation-mcp-server")
 		})
 
 		it("should prepend underscore if name starts with non-letter/underscore", () => {
 			expect(sanitizeMcpName("123server")).toBe("_123server")
 			// Hyphen at start still needs underscore prefix (function names must start with letter/underscore)
 			expect(sanitizeMcpName("-server")).toBe("_-server")
-			// Dots are removed, so ".server" becomes "server" which starts with a letter
-			expect(sanitizeMcpName(".server")).toBe("server")
+			// A dot becomes an underscore, so ".server" starts with an
+			// underscore and needs no extra prefix
+			expect(sanitizeMcpName(".server")).toBe("_server")
 		})
 
 		it("should not modify names that start with letter or underscore", () => {
@@ -151,6 +155,30 @@ describe("mcp-name utilities", () => {
 			// Hyphens are preserved, not encoded
 			expect(sanitizeMcpName("atlassian-jira_search")).toBe("atlassian-jira_search")
 			expect(sanitizeMcpName("atlassian-confluence_search")).toBe("atlassian-confluence_search")
+		})
+	})
+
+	describe("dot-containing names resolve end to end (#2338)", () => {
+		it("keeps dots reversible through build and fuzzy match", () => {
+			// The issue's case: a server (or tool) with dots must still
+			// resolve after sanitization.
+			const function_name = buildMcpToolName("System.v2", "System.readFile")
+			expect(function_name).toBe("mcp--System_v2--System_readFile")
+
+			const parsed = parseMcpToolName(function_name)
+			expect(parsed?.serverName).toBe("System_v2")
+			expect(parsed?.toolName).toBe("System_readFile")
+
+			// The executor matches the parsed names against the REAL
+			// server/tool names through the fuzzy comparison.
+			expect(toolNamesMatch("System.v2", parsed?.serverName ?? "")).toBe(true)
+			expect(toolNamesMatch("System.readFile", parsed?.toolName ?? "")).toBe(true)
+		})
+
+		it("matches a real dotted name against its sanitized form", () => {
+			expect(toolNamesMatch("System.readFile", "System_readFile")).toBe(true)
+			expect(toolNamesMatch("System.readFile", "SystemreadFile")).toBe(false)
+			expect(toolNamesMatch("System.readFile", "System.missingFile")).toBe(false)
 		})
 	})
 

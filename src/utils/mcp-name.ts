@@ -25,7 +25,7 @@ export const MCP_TOOL_PREFIX = "mcp"
  * @returns The normalized name with all hyphens converted to underscores
  */
 export function normalizeForComparison(name: string): string {
-	return name.replace(/-/g, "_")
+	return name.replace(/[-.]/g, "_")
 }
 
 /**
@@ -95,7 +95,15 @@ export function sanitizeMcpName(name: string): string {
 	// Replace spaces with underscores first
 	let sanitized = name.replace(/\s+/g, "_")
 
-	// Only allow alphanumeric, underscores, and hyphens
+	// Dots become underscores: AWS Bedrock forbids dots in function names,
+	// and replacement (instead of deletion) keeps the name readable and
+	// reversible — the fuzzy comparison treats dots, hyphens, and
+	// underscores as equivalent when matching back to the real name
+	// (issue #2338: a tool like "System.readFile" must still resolve).
+	sanitized = sanitized.replace(/\./g, "_")
+
+	// Only allow alphanumeric, underscores, and hyphens; anything else is
+	// removed
 	sanitized = sanitized.replace(/[^a-zA-Z0-9_-]/g, "")
 
 	// Replace any double-hyphen sequences with single hyphen to avoid separator conflicts
