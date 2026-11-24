@@ -4,27 +4,44 @@
 \* (call resolution), and UseMcpToolTool.validateToolExists tool pick.
 \* Failures: "svc.prod" and "svc_prod" generated the same tool name, and the
 \* exact-match lookup resolved it to the wrong server; an exact tool name later
-\* in the list lost to an earlier fuzzy match.
+\* in the list lost to an earlier fuzzy match. Round 2: a server that registers
+\* mid-request reclaims an alias and captures a call made under it, and two
+\* original tool names that sanitize alike lose one tool.
 \* Invariants: DistinctServerAliases, AliasResolvesToOriginal, SafeNameKeepsOwn,
-\* and ExactToolFirst.
+\* ExactToolFirst, GeneratedNameStaysBound, ExactNameOwnServer,
+\* DistinctToolSegments, and ToolAliasResolvesToOriginal.
 \* Expected: every registration order assigns pairwise-distinct aliases, each
-\* alias resolves back to its server, a safe name keeps itself, and an exact
-\* tool name wins before any fuzzy match.
+\* alias resolves back to its server, a safe name keeps itself, an exact
+\* tool name wins before any fuzzy match, a generated name reaches the server
+\* that issued it across a later alias reclaim, and colliding tool names keep
+\* distinct segments that each run their own original tool.
 \* Vendor facts are inputs. This model does not verify transport code, provider
 \* function-name rules, or 64-character truncation.
-\* Review: 0 covered, 2 added, gaps below. Both dimensions added for round-1
-\* findings 4675461229 (alias collision) and 4675461220 (exact tool name second)
-\* on https://github.com/Zoo-Code-Org/Zoo-Code/pull/2669.
-\* Gaps: truncation at 64 characters can still collide; ToolRouter discovery
-\* keeps the first tool per colliding name (pre-existing behavior); re-registration
-\* and delete are code-level idempotency, not modeled here.
-\* Result: the fixed gate passes on 18 states. Unfixed, NoReclaim, and NoSuffix
-\* violate DistinctServerAliases (Unfixed also breaks resolution); NoExactFirst
-\* violates only ExactToolFirst. No new defect beyond the two findings.
-\* Cost: about 40 minutes of agent work across spec, tests, and fix.
+\* Review: round 1: 0 covered, 2 added (threads 4675461229 and 4675461220).
+\* Round 2: 0 covered, 3 added, gaps below. Added for threads 4680494465 and
+\* 4680575748 (GeneratedNameStaysBound, ExactNameOwnServer; NoBinding isolates
+\* the reclaim) and for thread 4680575773 (DistinctToolSegments and
+\* ToolAliasResolvesToOriginal; NoToolSuffix and NoToolBind isolate them).
+\* Gaps: thread 4680575764 is a test-double policy for the spec files' unit
+\* tests, not a model failure. The McpHub.ts:1495 finding (a suffixed alias
+\* arrives with hyphens turned into underscores) needs string surgery that
+\* would multiply the alias domain; unit tests cover it. The 64-character limit
+\* (mcp_server.ts:43 Minor) is arithmetic on lengths; the binding covers a
+\* shortened name symbolically, but the length rule stays in unit tests.
+\* ToolRouter discovery keeps the first tool per colliding name (pre-existing
+\* behavior); re-registration and delete are code-level idempotency.
+\* Result: the fixed gate passes on 36 states. Unfixed, NoReclaim, and NoSuffix
+\* violate DistinctServerAliases, and the same three break
+\* GeneratedNameStaysBound: their colliding aliases make the generation
+\* binding ambiguous. Unfixed also breaks AliasResolvesToOriginal (round 1).
+\* NoExactFirst violates only ExactToolFirst; NoBinding only
+\* GeneratedNameStaysBound; NoToolBind only ToolAliasResolvesToOriginal;
+\* NoToolSuffix only DistinctToolSegments. No new defect beyond the findings.
+\* Cost: about 40 minutes (round 1) plus about 50 minutes of agent work
+\* across spec, tests, and fix (round 2).
 EXTENDS TLC, Naturals
-CONSTANT Fixed, Reclaim, Suffix, ExactFirst
-VARIABLE order, toolCall
+CONSTANT Fixed, Reclaim, Suffix, ExactFirst, Binding, ToolBind, ToolSuffix
+VARIABLE order, toolCall, toolOrder
 
 Positions == 1..3
 Servers == {"svc.prod", "svc_prod", "svc_prod_2"}
@@ -32,6 +49,7 @@ Bases == {"svc_prod", "svc_prod_2"}
 Aliases == Bases \cup {"svc_prod_3", "svc_prod_2_2", "svc_prod_2_3"} \cup {"none"}
 Tools == {"System.readFile", "System_readFile"}
 ToolRequests == Tools \cup {"System-readFile"}
+ToolOrders == {f \in [1..2 -> Tools] : f[1] # f[2]}
 
 Orders == {f \in [Positions -> Servers] : \A p, q \in Positions : p # q => f[p] # f[q]}
 
@@ -83,9 +101,61 @@ ResolveBySanitized(a) ==
        ELSE IF reg # {} THEN order[CHOOSE q \in reg : TRUE]
        ELSE "unresolved"
 
+\* Where dispatch sends a name that the request advertised under alias a,
+\* when the request was built after g registrations. Live exact-name
+\* resolution can reach a different server after a later registration
+\* reclaims a. The generation-time binding cannot.
+DispatchTarget(a, g) ==
+    IF ~Binding THEN ResolveBySanitized(a)
+    ELSE IF \E q \in 1..g : AMap[g][q] = a THEN order[CHOOSE q \in 1..g : AMap[g][q] = a]
+    ELSE ResolveBySanitized(a)
+
 DistinctServerAliases == \A p, q \in Positions : p # q => Final[p] # Final[q]
 AliasResolvesToOriginal == \A p \in Positions : ResolveBySanitized(Final[p]) = order[p]
 SafeNameKeepsOwn == \A p \in Positions : IsSafe(order[p]) => Final[p] = order[p]
+
+\* A generated name stays bound to the server that issued it, also when a
+\* later server reclaims that alias (round 2 threads 4680494465 and
+\* 4680575748 on PR 2669). The NoBinding trace shows the wrong server pick.
+GeneratedNameStaysBound ==
+    \A g \in 1..3 : \A p \in 1..g : DispatchTarget(AMap[g][p], g) = order[p]
+
+\* Exact-name resolution answers with the server whose original name it is.
+\* It holds in every config: the exact branch runs before the registry, and
+\* a safe name owns itself in the registry. No sabotage isolates it, because
+\* registry and exact branch agree on safe names. The dispatch-level danger
+\* is the GeneratedNameStaysBound trace, not this branch.
+ExactNameOwnServer ==
+    \A q \in Positions : IsSafe(order[q]) => ResolveBySanitized(order[q]) = order[q]
+
+\* The generated segment for one original tool: the first listed tool keeps
+\* the base; a distinct original that sanitizes to the same base moves to a
+\* suffixed segment. Without the suffix, both tools get one segment and the
+\* duplicate filter drops one definition (thread 4680575773).
+ToolBase == "System_readFile"
+ToolSegment(t) ==
+    IF ~ToolSuffix THEN ToolBase
+    ELSE IF t = toolOrder[1] THEN ToolBase
+    ELSE "System_readFile_2"
+
+DistinctToolSegments == ToolSegment(toolOrder[1]) # ToolSegment(toolOrder[2])
+
+\* The reverse binding from a generated segment to its original tool. With
+\* colliding segments, the second registration overwrites the first.
+BoundTool(i) ==
+    IF ~ToolSuffix THEN toolOrder[2]
+    ELSE toolOrder[i]
+
+\* Without the binding, dispatch picks the literal exact name first.
+ExactToolPick == "System_readFile"
+DispatchedTool(i) ==
+    IF ToolBind THEN BoundTool(i)
+    ELSE IF ExactToolPick \in Tools THEN ExactToolPick
+    ELSE "System.readFile"
+
+ToolAliasResolvesToOriginal ==
+    (ToolSegment(toolOrder[1]) # ToolSegment(toolOrder[2])) =>
+        (\A i \in 1..2 : DispatchedTool(i) = toolOrder[i])
 
 \* The exact requested name wins when it exists on the server; a mangled name
 \* falls back to the first fuzzy match in the list order modeled here.
@@ -93,7 +163,7 @@ SelectedTool(r) == IF ExactFirst /\ r \in Tools THEN r ELSE "System.readFile"
 ExpectedTool(r) == IF r \in Tools THEN r ELSE "System.readFile"
 ExactToolFirst == SelectedTool(toolCall) = ExpectedTool(toolCall)
 
-Init == order \in Orders /\ toolCall \in ToolRequests
-Next == UNCHANGED <<order, toolCall>>
-Spec == Init /\ [][Next]_<<order, toolCall>>
+Init == order \in Orders /\ toolCall \in ToolRequests /\ toolOrder \in ToolOrders
+Next == UNCHANGED <<order, toolCall, toolOrder>>
+Spec == Init /\ [][Next]_<<order, toolCall, toolOrder>>
 ====
