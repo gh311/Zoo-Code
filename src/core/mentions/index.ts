@@ -20,6 +20,16 @@ import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
 import type { SkillContent } from "../../shared/skills"
 
+/**
+ * Aggregate inline budget for folder mentions (#1539). Without it, a folder
+ * mention inlines the full text of EVERY non-ignored text file (each file only
+ * individually capped at DEFAULT_LINE_LIMIT), producing a single user-message
+ * block that can dwarf the model's context window and — persisted in
+ * apiConversationHistory — re-enter every subsequent request.
+ */
+export const MAX_FOLDER_FILES_INLINED = 20
+export const MAX_FOLDER_TOTAL_LINES = 4000
+
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
 		return
@@ -325,6 +335,15 @@ async function getFileOrFolderContentWithMetadata(
 			const entries = await fs.readdir(absPath, { withFileTypes: true })
 			let folderListing = ""
 			const fileReadResults: string[] = []
+			// Folder mentions inline every non-ignored text file's contents into a
+			// single user-message block (#1539): with no aggregate budget a large
+			// folder produced a multi-hundred-thousand-token message that is
+			// persisted in apiConversationHistory and re-sent on every turn. Cap
+			// how much ONE folder mention may inline; skipped files stay readable
+			// via read_file on demand.
+			const skippedFileNames: string[] = []
+			let inlinedFileCount = 0
+			let totalInlinedLines = 0
 			const LOCK_SYMBOL = "🔒"
 
 			for (let index = 0; index < entries.length; index++) {
@@ -353,7 +372,39 @@ async function getFileOrFolderContentWithMetadata(
 							const isBinary = await isBinaryFile(absoluteFilePath).catch(() => false)
 							if (!isBinary) {
 								const result = await extractTextFromFileWithMetadata(absoluteFilePath)
-								fileReadResults.push(formatFileReadResult(filePath.toPosix(), result))
+								// Count what actually enters the context: the SHOWN
+								// content, not the file's full line count.
+								const shownLineCount = result.content.split("\n").length
+								if (shownLineCount > MAX_FOLDER_TOTAL_LINES) {
+									if (inlinedFileCount === 0) {
+										// A single oversized file must not blow the
+										// budget either: inline only the budget share.
+										const truncatedLines = result.content
+											.split("\n")
+											.slice(0, MAX_FOLDER_TOTAL_LINES)
+											.join("\n")
+										fileReadResults.push(
+											formatFileReadResult(filePath.toPosix(), {
+												...result,
+												content: truncatedLines,
+											}),
+										)
+										inlinedFileCount++
+										totalInlinedLines = MAX_FOLDER_TOTAL_LINES
+									} else {
+										skippedFileNames.push(entry.name)
+									}
+								} else if (
+									inlinedFileCount >= MAX_FOLDER_FILES_INLINED ||
+									(inlinedFileCount > 0 &&
+										totalInlinedLines + shownLineCount > MAX_FOLDER_TOTAL_LINES)
+								) {
+									skippedFileNames.push(entry.name)
+								} else {
+									fileReadResults.push(formatFileReadResult(filePath.toPosix(), result))
+									inlinedFileCount++
+									totalInlinedLines += shownLineCount
+								}
 							}
 						} catch {
 							// Skip files that can't be read
@@ -370,6 +421,13 @@ async function getFileOrFolderContentWithMetadata(
 			let content = `[read_file for folder '${mentionPath}']\nFolder listing:\n${folderListing}`
 			if (fileReadResults.length > 0) {
 				content += `\n\n--- File Contents ---\n\n${fileReadResults.join("\n\n")}`
+			}
+			if (skippedFileNames.length > 0) {
+				content +=
+					`\n\nIMPORTANT: Folder content truncated to keep the context within budget.` +
+					` Inlined ${inlinedFileCount} file(s) (~${totalInlinedLines} lines).` +
+					` ${skippedFileNames.length} file(s) were NOT inlined — use read_file on each individually to view its contents.` +
+					` Skipped: ${skippedFileNames.join(", ")}`
 			}
 
 			return {
