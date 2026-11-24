@@ -1135,15 +1135,15 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 
 			await provider.createTaskWithHistoryItem(historyItem)
 
-			expect(writeCount).toBeLessThanOrEqual(3)
+			// The fixture is deterministic: every write drifts the selection,
+			// so the bounded loop runs exactly three rounds. Round 3 captures
+			// switched-profile with its openai settings before its own write
+			// sets final-profile — the loop then stops at the bound.
+			expect(writeCount).toBe(3)
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			// The task carries ONE consistent pair — whatever the last
-			// captured round produced.
-			const servedName = taskOptions?.historyItem?.apiConfigName
-			expect(servedName === "switched-profile" || servedName === "final-profile").toBe(true)
-			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(
-				servedName === "final-profile" ? providerIdentifiers.openrouter : providerIdentifiers.openai,
-			)
+			// The task carries the round-3 captured pair.
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
 		})
 
 		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
