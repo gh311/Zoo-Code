@@ -3465,4 +3465,68 @@ describe("McpHub", () => {
 			await secondFlow
 		})
 	})
+
+	describe("sanitized name aliasing", () => {
+		type HubPrivates = {
+			registerSanitizedAlias: (name: string) => void
+			connections: Array<{ server: { name: string } }>
+			sanitizedNameRegistry: Map<string, string>
+			deleteConnection: (name: string) => Promise<void>
+		}
+
+		const privates = (hub: McpHubType): HubPrivates => hub as unknown as HubPrivates
+
+		const registerServer = (hub: McpHubType, name: string): void => {
+			const p = privates(hub)
+			p.registerSanitizedAlias(name)
+			p.connections.push({ server: { name } })
+		}
+
+		it.each([
+			["svc.prod", "svc_prod"],
+			["svc_prod", "svc.prod"],
+		] as const)(
+			"assigns distinct resolvable aliases regardless of registration order (%s first)",
+			(first, second) => {
+				const hub = new McpHub(mockProvider as ClineProvider)
+				registerServer(hub, first)
+				registerServer(hub, second)
+
+				const dottedAlias = hub.getServerAlias("svc.prod")
+				const literalAlias = hub.getServerAlias("svc_prod")
+
+				expect(dottedAlias).not.toBe(literalAlias)
+				expect(literalAlias).toBe("svc_prod")
+				expect(hub.findServerNameBySanitizedName(dottedAlias)).toBe("svc.prod")
+				expect(hub.findServerNameBySanitizedName(literalAlias)).toBe("svc_prod")
+			},
+		)
+
+		it("moves a displaced server again when a later literal claims its suffixed alias", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod") // takes svc_prod
+			registerServer(hub, "svc_prod") // literal reclaims; svc.prod moves to svc_prod_2
+			registerServer(hub, "svc_prod_2") // literal claims svc_prod_2; svc.prod moves again
+
+			expect(hub.getServerAlias("svc.prod")).toBe("svc_prod_3")
+			expect(hub.getServerAlias("svc_prod")).toBe("svc_prod")
+			expect(hub.getServerAlias("svc_prod_2")).toBe("svc_prod_2")
+			expect(hub.findServerNameBySanitizedName("svc_prod_3")).toBe("svc.prod")
+		})
+
+		it("removes the assigned (possibly suffixed) alias when the last connection goes away", async () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc_prod")
+			registerServer(hub, "svc.prod") // displaced to svc_prod_2
+
+			const p = privates(hub)
+			expect(p.sanitizedNameRegistry.get("svc_prod_2")).toBe("svc.prod")
+
+			p.connections = p.connections.filter((c) => c.server.name !== "svc.prod")
+			await p.deleteConnection("svc.prod")
+
+			expect(p.sanitizedNameRegistry.has("svc_prod_2")).toBe(false)
+			expect(p.sanitizedNameRegistry.get("svc_prod")).toBe("svc_prod")
+		})
+	})
 })

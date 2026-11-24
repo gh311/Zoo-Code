@@ -6,6 +6,7 @@ import {
 	normalizeForComparison,
 	toolNamesMatch,
 	isMcpTool,
+	nextServerAlias,
 	MCP_TOOL_SEPARATOR,
 	MCP_TOOL_PREFIX,
 } from "../mcp-name"
@@ -532,6 +533,30 @@ describe("mcp-name utilities", () => {
 			// Fuzzy match should work
 			expect(toolNamesMatch("my-server", parsed!.serverName)).toBe(true)
 			expect(toolNamesMatch("get-user", parsed!.toolName)).toBe(true)
+		})
+	})
+
+	describe("nextServerAlias", () => {
+		it("returns the plain sanitized name when nothing is taken", () => {
+			expect(nextServerAlias("svc.prod", new Set())).toBe("svc_prod")
+		})
+
+		it("keeps an API-safe name even when other aliases are taken", () => {
+			expect(nextServerAlias("svc_prod", new Set(["other", "other_2"]))).toBe("svc_prod")
+		})
+
+		it.each([
+			{ taken: ["svc_prod"], expected: "svc_prod_2" },
+			{ taken: ["svc_prod", "svc_prod_2"], expected: "svc_prod_3" },
+			{ taken: ["svc_prod", "svc_prod_2", "svc_prod_3"], expected: "svc_prod_4" },
+		])("suffixes past every taken candidate ($expected)", ({ taken, expected }) => {
+			expect(nextServerAlias("svc.prod", new Set(taken))).toBe(expected)
+		})
+
+		it("skips candidates owned by another server's original name", () => {
+			// "svc_prod_2" is a connected server's original name, not an alias:
+			// the exact-match lookup would steal it, so the alias must skip it.
+			expect(nextServerAlias("svc.prod", new Set(["svc_prod", "svc_prod_2"]))).toBe("svc_prod_3")
 		})
 	})
 })

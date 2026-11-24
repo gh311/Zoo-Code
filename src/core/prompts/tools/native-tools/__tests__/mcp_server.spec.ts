@@ -5,6 +5,7 @@ import type { McpServer, McpTool } from "@roo-code/types"
 import type { McpHub } from "../../../../../services/mcp/McpHub"
 
 import { getMcpServerTools } from "../mcp_server"
+import { sanitizeMcpName } from "../../../../../utils/mcp-name"
 
 // Helper type to access function tools
 type FunctionTool = OpenAI.Chat.ChatCompletionTool & { type: "function" }
@@ -30,8 +31,11 @@ describe("getMcpServerTools", () => {
 		tools,
 	})
 
-	const createMockMcpHub = (servers: McpServer[]): Partial<McpHub> => ({
+	const createMockMcpHub = (servers: McpServer[], aliases?: Record<string, string>): Partial<McpHub> => ({
 		getServers: vi.fn().mockReturnValue(servers),
+		// Mirrors the production fallback: registration-assigned aliases win,
+		// servers registered outside connectToServer fall back to sanitization.
+		getServerAlias: vi.fn((name: string) => aliases?.[name] ?? sanitizeMcpName(name)),
 	})
 
 	it("should return empty array when mcpHub is undefined", () => {
@@ -240,5 +244,26 @@ describe("getMcpServerTools", () => {
 			expect(result).toHaveLength(1)
 			expect(getFunction(result[0]).name).toBe("mcp--server1--tool1")
 		})
+	})
+
+	it("uses hub-assigned aliases so colliding server names generate distinct tool names", () => {
+		const dotted = createMockServer("svc.prod", [createMockTool("ping")])
+		const literal = createMockServer("svc_prod", [createMockTool("ping")])
+		const mockHub = createMockMcpHub([dotted, literal], { "svc.prod": "svc_prod_2" })
+
+		const result = getMcpServerTools(mockHub as McpHub)
+
+		const names = result.map((t) => getFunction(t).name)
+		expect(names).toStrictEqual(["mcp--svc_prod_2--ping", "mcp--svc_prod--ping"])
+	})
+
+	it("falls back to plain sanitization for servers without a registered alias", () => {
+		const server = createMockServer("svc.prod", [createMockTool("ping")])
+		const mockHub = createMockMcpHub([server])
+
+		const result = getMcpServerTools(mockHub as McpHub)
+
+		expect(result).toHaveLength(1)
+		expect(getFunction(result[0]).name).toBe("mcp--svc_prod--ping")
 	})
 })

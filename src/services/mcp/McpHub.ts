@@ -43,7 +43,7 @@ import { McpOAuthClientProvider } from "./McpOAuthClientProvider"
 import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { injectVariables } from "../../utils/config"
 import { safeWriteJson } from "../../utils/safeWriteJson"
-import { sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
+import { nextServerAlias, sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
 import { ToolRouter } from "../tools/ToolRouter"
 
 // Discriminated union for connection states
@@ -723,9 +723,8 @@ export class McpHub {
 		// Remove existing connection if it exists with the same source
 		await this.deleteConnection(name, source)
 
-		// Register the sanitized name for O(1) lookup
-		const sanitizedName = sanitizeMcpName(name)
-		this.sanitizedNameRegistry.set(sanitizedName, name)
+		// Register the collision-free alias used in generated tool names
+		this.registerSanitizedAlias(name)
 
 		// Check if MCP is globally enabled
 		const mcpEnabled = await this.isMcpEnabled()
@@ -1501,6 +1500,67 @@ export class McpHub {
 		return null
 	}
 
+	/**
+	 * The server name used in generated tool names (mcp--<alias>--tool).
+	 * Registration assigns a collision-free alias; servers registered outside
+	 * connectToServer fall back to plain sanitization.
+	 */
+	public getServerAlias(serverName: string): string {
+		for (const [alias, original] of this.sanitizedNameRegistry) {
+			if (original === serverName) {
+				return alias
+			}
+		}
+		return sanitizeMcpName(serverName)
+	}
+
+	/**
+	 * Register the collision-free alias for a server.
+	 *
+	 * A server whose original name is already API-safe owns that name: the
+	 * exact-match branch of findServerNameBySanitizedName resolves it before
+	 * the registry, so any other server currently holding the alias moves to a
+	 * free suffix. Servers that need sanitization never take an alias that
+	 * another connected server owns by original name (issue #2338 review:
+	 * "svc.prod" and "svc_prod" must generate distinct, resolvable names).
+	 */
+	private registerSanitizedAlias(name: string): void {
+		this.removeAliasEntriesFor(name)
+		if (sanitizeMcpName(name) === name) {
+			const previousOwner = this.sanitizedNameRegistry.get(name)
+			if (previousOwner !== undefined && previousOwner !== name) {
+				const taken = this.takenAliasStrings()
+				this.sanitizedNameRegistry.delete(name)
+				this.sanitizedNameRegistry.set(nextServerAlias(previousOwner, taken), previousOwner)
+			}
+			this.sanitizedNameRegistry.set(name, name)
+			return
+		}
+		this.sanitizedNameRegistry.set(nextServerAlias(name, this.takenAliasStrings()), name)
+	}
+
+	/** Drop every alias entry that maps back to this original server name. */
+	private removeAliasEntriesFor(name: string): void {
+		for (const [alias, original] of this.sanitizedNameRegistry) {
+			if (original === name) {
+				this.sanitizedNameRegistry.delete(alias)
+			}
+		}
+	}
+
+	/** Aliases and original names that would win a lookup for a new alias. */
+	private takenAliasStrings(): Set<string> {
+		const taken = new Set<string>()
+		for (const connection of this.connections) {
+			taken.add(connection.server.name)
+		}
+		for (const [alias, original] of this.sanitizedNameRegistry) {
+			taken.add(alias)
+			taken.add(original)
+		}
+		return taken
+	}
+
 	private async fetchToolsList(serverName: string, source?: "global" | "project"): Promise<McpTool[]> {
 		try {
 			// Use the helper method to find the connection
@@ -1635,8 +1695,9 @@ export class McpHub {
 		// Remove from sanitized name registry if no more connections with this name exist
 		const remainingConnections = this.connections.filter((conn) => conn.server.name === name)
 		if (remainingConnections.length === 0) {
-			const sanitizedName = sanitizeMcpName(name)
-			this.sanitizedNameRegistry.delete(sanitizedName)
+			// The registry key is the assigned alias, which may carry a
+			// collision suffix — remove by original name, not by re-sanitizing.
+			this.removeAliasEntriesFor(name)
 		}
 	}
 

@@ -549,6 +549,60 @@ describe("useMcpToolTool", () => {
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", "Tool executed successfully", [])
 		})
 
+		it("should select an exact tool name over an earlier fuzzy match", async () => {
+			// Reset consecutiveMistakeCount for this test
+			mockTask.consecutiveMistakeCount = 0
+
+			const mockServers = [
+				{
+					name: "test-server",
+					tools: [
+						{ name: "System.readFile", description: "Dotted tool" },
+						{ name: "System_readFile", description: "Underscore tool" },
+					],
+				},
+			]
+			const callToolMock = vi.fn().mockResolvedValue({
+				content: [{ type: "text", text: "Tool executed successfully" }],
+			})
+
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					getAllServers: vi.fn().mockReturnValue(mockServers),
+					callTool: callToolMock,
+				}),
+				postMessageToWebview: vi.fn(),
+			})
+
+			const block: ToolUse = {
+				type: "tool_use",
+				name: "use_mcp_tool",
+				params: {
+					server_name: "test-server",
+					tool_name: "System_readFile",
+					arguments: JSON.stringify({ test: "data" }),
+				},
+				nativeArgs: {
+					server_name: "test-server",
+					tool_name: "System_readFile",
+					arguments: { test: "data" },
+				},
+				partial: false,
+			}
+
+			mockAskApproval.mockResolvedValue(true)
+
+			await useMcpToolTool.handle(mockTask as Task, block as never, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				toolCallId: "test-tool-call-id",
+			})
+
+			// The exact requested tool wins; the earlier fuzzy match is not used.
+			expect(callToolMock).toHaveBeenCalledWith("test-server", "System_readFile", { test: "data" })
+		})
+
 		it("should reject unknown server names with available servers listed", async () => {
 			// Arrange
 			mockTask.consecutiveMistakeCount = 0

@@ -231,8 +231,12 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				return { isValid: false, availableTools: [] }
 			}
 
-			// Check if the requested tool exists (using fuzzy matching to handle model mangling of hyphens)
-			const tool = server.tools.find((t) => toolNamesMatch(t.name, toolName))
+			// Select the exact tool name first; fuzzy matching is only a fallback
+			// for model-mangled names, so an exact name later in the list is not
+			// stolen by a similarly normalized earlier entry.
+			const tool =
+				server.tools.find((t) => t.name === toolName) ??
+				server.tools.find((t) => toolNamesMatch(t.name, toolName))
 
 			if (!tool) {
 				// Tool not found - provide list of available tools

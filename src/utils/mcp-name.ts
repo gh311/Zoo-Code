@@ -123,6 +123,35 @@ export function sanitizeMcpName(name: string): string {
 }
 
 /**
+ * Pick the server alias used in generated tool names (mcp--<alias>--tool).
+ *
+ * The base is the sanitized name. When another server already owns that alias
+ * — or a connected server's original name equals it, which would win the
+ * exact-match lookup in findServerNameBySanitizedName — fall back to a numeric
+ * suffix. The candidate range always contains a free name: at most
+ * `taken.size` strings are taken and every iteration tries one new candidate.
+ *
+ * @param name - The original server name
+ * @param taken - Aliases and original names that must not be reused
+ * @returns A sanitized alias that is free in `taken`
+ */
+export function nextServerAlias(name: string, taken: ReadonlySet<string>): string {
+	const base = sanitizeMcpName(name)
+	if (!taken.has(base)) {
+		return base
+	}
+	for (let i = 2; i <= taken.size + 2; i++) {
+		const candidate = `${base}_${i}`
+		if (!taken.has(candidate)) {
+			return candidate
+		}
+	}
+	// Unreachable: the loop tries taken.size + 1 distinct candidates and at
+	// most taken.size of them are taken.
+	return base
+}
+
+/**
  * Build a full MCP tool function name from server and tool names.
  * The format is: mcp--{sanitized_server_name}--{sanitized_tool_name}
  *
