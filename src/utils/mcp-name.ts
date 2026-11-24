@@ -18,6 +18,11 @@ export const MCP_TOOL_SEPARATOR = "--"
 export const MCP_TOOL_PREFIX = "mcp"
 
 /**
+ * Maximum length of a generated MCP tool function name (Gemini limit).
+ */
+export const MAX_MCP_TOOL_NAME_LENGTH = 64
+
+/**
  * Normalize a string for comparison by treating hyphens and underscores as equivalent.
  * This is used to match tool names when models convert hyphens to underscores.
  *
@@ -155,22 +160,38 @@ export function nextServerAlias(name: string, taken: ReadonlySet<string>): strin
  * Build a full MCP tool function name from server and tool names.
  * The format is: mcp--{sanitized_server_name}--{sanitized_tool_name}
  *
- * The total length is capped at 64 characters to conform to API limits.
+ * The total length is capped at 64 characters to conform to API limits. The
+ * cap comes out of the server segment first: the tool segment identifies the
+ * call target, so a long alias must not truncate it away (issue #2338
+ * review: a 57-character suffixed alias plus tool "x" used to truncate to a
+ * name ending in "--"). A name whose server segment was shortened still
+ * resolves: generation records the full name -> original server and tool
+ * binding (McpHub.registerGeneratedToolName), and dispatch consults that
+ * binding before the live alias registry.
  *
- * @param serverName - The MCP server name
- * @param toolName - The tool name
+ * @param serverName - The MCP server name (or its hub-assigned alias)
+ * @param toolName - The MCP tool name (already sanitized when it comes from
+ *   the collision-resolved per-server segment)
  * @returns A sanitized function name in the format mcp--serverName--toolName
  */
 export function buildMcpToolName(serverName: string, toolName: string): string {
 	const sanitizedServer = sanitizeMcpName(serverName)
 	const sanitizedTool = sanitizeMcpName(toolName)
 
-	// Build the full name: mcp--{server}--{tool}
-	const fullName = `${MCP_TOOL_PREFIX}${MCP_TOOL_SEPARATOR}${sanitizedServer}${MCP_TOOL_SEPARATOR}${sanitizedTool}`
+	// "mcp--" (5) plus the "--" separator before the tool segment (2).
+	const overhead = MCP_TOOL_PREFIX.length + 2 * MCP_TOOL_SEPARATOR.length
+	const maxServerSegment = MAX_MCP_TOOL_NAME_LENGTH - overhead - sanitizedTool.length
+	const serverSegment =
+		sanitizedServer.length > maxServerSegment
+			? sanitizedServer.slice(0, Math.max(maxServerSegment, 1))
+			: sanitizedServer
 
-	// Truncate if necessary (max 64 chars for Gemini)
-	if (fullName.length > 64) {
-		return fullName.slice(0, 64)
+	const fullName = `${MCP_TOOL_PREFIX}${MCP_TOOL_SEPARATOR}${serverSegment}${MCP_TOOL_SEPARATOR}${sanitizedTool}`
+
+	// Last resort for a tool segment too long to fit even with a 1-character
+	// server segment. The reverse binding still maps the truncated name.
+	if (fullName.length > MAX_MCP_TOOL_NAME_LENGTH) {
+		return fullName.slice(0, MAX_MCP_TOOL_NAME_LENGTH)
 	}
 
 	return fullName

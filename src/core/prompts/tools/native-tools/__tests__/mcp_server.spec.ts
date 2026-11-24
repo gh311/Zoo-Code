@@ -2,10 +2,9 @@ import type OpenAI from "openai"
 
 import type { McpServer, McpTool } from "@roo-code/types"
 
-import type { McpHub } from "../../../../../services/mcp/McpHub"
+import { McpHub } from "../../../../../services/mcp/McpHub"
 
 import { getMcpServerTools } from "../mcp_server"
-import { sanitizeMcpName } from "../../../../../utils/mcp-name"
 
 // Helper type to access function tools
 type FunctionTool = OpenAI.Chat.ChatCompletionTool & { type: "function" }
@@ -33,10 +32,29 @@ describe("getMcpServerTools", () => {
 
 	const createMockMcpHub = (servers: McpServer[], aliases?: Record<string, string>): Partial<McpHub> => ({
 		getServers: vi.fn().mockReturnValue(servers),
-		// Mirrors the production fallback: registration-assigned aliases win,
-		// servers registered outside connectToServer fall back to sanitization.
-		getServerAlias: vi.fn((name: string) => aliases?.[name] ?? sanitizeMcpName(name)),
+		// Explicit alias stubs for tests that only verify alias consumption.
+		// A test double must not copy the production fallback: the real
+		// getServerAlias fallback is covered by createRealAliasHub below.
+		getServerAlias: vi.fn((name: string) => aliases?.[name] ?? name),
+		registerGeneratedToolName: vi.fn(),
 	})
+
+	// Drive the real McpHub alias and binding methods with controlled
+	// registry state. The constructor is bypassed (its file watchers and
+	// initial connects are unrelated here); the production methods run for
+	// real, so a broken fallback or binding fails these tests.
+	const createRealAliasHub = (servers: McpServer[], registry: Array<[string, string]> = []): McpHub => {
+		const hub = Object.create(McpHub.prototype) as McpHub
+		const state = hub as unknown as {
+			sanitizedNameRegistry: Map<string, string>
+			generatedToolBindings: Map<string, { serverName: string; toolName: string }>
+			connections: unknown[]
+		}
+		state.sanitizedNameRegistry = new Map(registry)
+		state.generatedToolBindings = new Map()
+		state.connections = []
+		return Object.assign(hub, { getServers: () => servers })
+	}
 
 	it("should return empty array when mcpHub is undefined", () => {
 		const result = getMcpServerTools(undefined)
@@ -257,13 +275,58 @@ describe("getMcpServerTools", () => {
 		expect(names).toStrictEqual(["mcp--svc_prod_2--ping", "mcp--svc_prod--ping"])
 	})
 
-	it("falls back to plain sanitization for servers without a registered alias", () => {
+	it("falls back to plain sanitization through the real getServerAlias when the registry has no alias", () => {
 		const server = createMockServer("svc.prod", [createMockTool("ping")])
+		// Controlled registry state: no entry for "svc.prod", so the real
+		// getServerAlias runs its production fallback instead of a mock that
+		// repeats it.
+		const hub = createRealAliasHub([server])
+
+		const result = getMcpServerTools(hub)
+
+		expect(result).toHaveLength(1)
+		expect(getFunction(result[0]).name).toBe("mcp--svc_prod--ping")
+		// Generation also bound the advertised name to its issuing server and
+		// original tool, so dispatch can resolve it without the registry.
+		expect(hub.findGeneratedToolBinding("mcp--svc_prod--ping")).toStrictEqual({
+			serverName: "svc.prod",
+			toolName: "ping",
+		})
+	})
+
+	it("gives colliding tool names distinct segments and binds each to its original tool", () => {
+		// "System.readFile" and "System_readFile" both sanitize to
+		// System_readFile; the second must keep its own generated segment and
+		// its own reverse binding, or its definition is dropped and the call
+		// always executes the literal tool (thread 4680575773).
+		const server = createMockServer("server", [
+			createMockTool("System.readFile"),
+			createMockTool("System_readFile"),
+		])
 		const mockHub = createMockMcpHub([server])
 
 		const result = getMcpServerTools(mockHub as McpHub)
 
-		expect(result).toHaveLength(1)
-		expect(getFunction(result[0]).name).toBe("mcp--svc_prod--ping")
+		const names = result.map((t) => getFunction(t).name)
+		expect(names).toStrictEqual(["mcp--server--System_readFile", "mcp--server--System_readFile_2"])
+		expect(mockHub.registerGeneratedToolName).toHaveBeenCalledWith(
+			"mcp--server--System_readFile",
+			"server",
+			"System.readFile",
+		)
+		expect(mockHub.registerGeneratedToolName).toHaveBeenCalledWith(
+			"mcp--server--System_readFile_2",
+			"server",
+			"System_readFile",
+		)
+	})
+
+	it("reuses the same segment when the same original tool name repeats", () => {
+		const server = createMockServer("server", [createMockTool("tool"), createMockTool("tool")])
+		const mockHub = createMockMcpHub([server])
+
+		const result = getMcpServerTools(mockHub as McpHub)
+
+		expect(result.map((t) => getFunction(t).name)).toStrictEqual(["mcp--server--tool"])
 	})
 })

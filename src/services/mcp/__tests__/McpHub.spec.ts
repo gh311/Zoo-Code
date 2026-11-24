@@ -14,6 +14,7 @@ import { ServerConfigSchema, McpHub } from "../McpHub"
 import { McpOAuthClientProvider } from "../McpOAuthClientProvider"
 import { OAUTH_FLOW_TIMEOUT_MS } from "../constants"
 import { t } from "../../../i18n"
+import { buildMcpToolName } from "../../../utils/mcp-name"
 
 type McpHubPrivate = {
 	watchMcpSettingsFile: () => Promise<void>
@@ -3527,6 +3528,52 @@ describe("McpHub", () => {
 
 			expect(p.sanitizedNameRegistry.has("svc_prod_2")).toBe(false)
 			expect(p.sanitizedNameRegistry.get("svc_prod")).toBe("svc_prod")
+		})
+
+		it("resolves a suffixed alias whose hyphens the model turned into underscores", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc_prod-name") // safe: owns itself
+			registerServer(hub, "svc.prod-name") // sanitized base is taken: alias svc_prod-name_2
+
+			expect(hub.getServerAlias("svc.prod-name")).toBe("svc_prod-name_2")
+			// The model calls the generated alias with every hyphen swapped
+			// for an underscore: exact and fuzzy-original lookups both miss.
+			expect(hub.findServerNameBySanitizedName("svc_prod_name_2")).toBe("svc.prod-name")
+		})
+
+		it("keeps a generated name bound to its issuing server across a mid-request reclaim", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod")
+
+			// The request is built now: the advertised name binds to svc.prod.
+			const advertised = buildMcpToolName(hub.getServerAlias("svc.prod"), "ping")
+			hub.registerGeneratedToolName(advertised, "svc.prod", "ping")
+
+			// The literal server connects before the response arrives and
+			// reclaims the alias (issue #2338 review race).
+			registerServer(hub, "svc_prod")
+			expect(hub.getServerAlias("svc.prod")).toBe("svc_prod_2")
+
+			// Live resolution now points the alias at the literal server...
+			expect(hub.findServerNameBySanitizedName("svc_prod")).toBe("svc_prod")
+			// ...but the advertised binding still routes the call to the
+			// server that issued the name.
+			expect(hub.findGeneratedToolBinding(advertised)).toStrictEqual({
+				serverName: "svc.prod",
+				toolName: "ping",
+			})
+		})
+
+		it("drops generated-name bindings when the issuing server's last connection goes away", async () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod")
+			hub.registerGeneratedToolName("mcp--svc_prod--ping", "svc.prod", "ping")
+
+			const p = privates(hub)
+			p.connections = p.connections.filter((c) => c.server.name !== "svc.prod")
+			await p.deleteConnection("svc.prod")
+
+			expect(hub.findGeneratedToolBinding("mcp--svc_prod--ping")).toBeNull()
 		})
 	})
 })

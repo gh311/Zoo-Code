@@ -46,13 +46,21 @@ import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
  */
 type ProviderDouble = {
 	context: Pick<vscode.ExtensionContext, "extensionPath" | "globalStoragePath" | "storagePath" | "logPath">
-	getMcpHub: () => Pick<McpHub, "getServers"> | undefined
+	getMcpHub: () => Pick<McpHub, "getServers" | "getServerAlias" | "registerGeneratedToolName"> | undefined
 }
 
 function makeProvider(servers: McpServer[] = []): ClineProvider {
 	const provider: ProviderDouble = {
 		context: { extensionPath: "/mock", globalStoragePath: "/mock", storagePath: "/mock", logPath: "/mock" },
-		getMcpHub: () => ({ getServers: () => servers }),
+		// Explicit identity aliases: these tests verify which MCP declarations
+		// are sent, not alias assignment, so the controlled stub keeps the
+		// generated names stable (a broken fallback is covered by the
+		// real-registry tests in native-tools/__tests__/mcp_server.spec.ts).
+		getMcpHub: () => ({
+			getServers: () => servers,
+			getServerAlias: (name: string) => name,
+			registerGeneratedToolName: () => {},
+		}),
 	}
 	return provider as ClineProvider
 }

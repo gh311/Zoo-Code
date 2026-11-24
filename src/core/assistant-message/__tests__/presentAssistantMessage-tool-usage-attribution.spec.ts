@@ -332,6 +332,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 						getAllServers: () => [
 							{
 								name: "my_server",
@@ -380,6 +381,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}
@@ -407,6 +409,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 		it("rejects at dispatch when use_mcp_tool is in disabledTools, without invoking the server method", async () => {
 			const mockHub = {
 				findServerNameBySanitizedName: () => "my_server",
+				findGeneratedToolBinding: () => null,
 				getAllServers: () => [
 					{
 						name: "my_server",
@@ -476,6 +479,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 		it("rejects at dispatch when use_mcp_tool is in the model's excludedTools", async () => {
 			const mockHub = {
 				findServerNameBySanitizedName: () => "my_server",
+				findGeneratedToolBinding: () => null,
 				getAllServers: () => [
 					{
 						name: "my_server",
@@ -549,6 +553,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}
@@ -639,6 +644,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}
@@ -681,6 +687,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}
@@ -706,6 +713,102 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("use_mcp_tool", expect.any(String))
 			expect(mockTask.consecutiveMistakeCount).toBe(1)
 			expect(mockTask.didAlreadyUseTool).toBe(false)
+		})
+
+		it("routes a generated name to the issuing server when a later registration reclaims its alias", async () => {
+			// Earlier tests in this file may queue one-shot validateToolUse
+			// rejections that their own block never consumes; reset so this
+			// test's dispatch is not rejected by a stale queue entry.
+			vi.mocked(validateToolUse).mockReset()
+			vi.mocked(validateToolUse).mockImplementation(() => undefined)
+			// The request advertised mcp--svc_prod--ping for svc.prod; the
+			// literal svc_prod connected before the response arrived and
+			// reclaimed the alias. Live resolution now answers "svc_prod",
+			// so dispatch must honor the generation-time binding instead
+			// (issue #2338 review race).
+			const mockHub = {
+				findGeneratedToolBinding: (name: string) =>
+					name === "mcp--svc_prod--ping" ? { serverName: "svc.prod", toolName: "ping" } : null,
+				findServerNameBySanitizedName: () => "svc_prod",
+				getAllServers: () => [
+					{ name: "svc.prod", tools: [{ name: "ping", enabledForPrompt: true }] },
+					{ name: "svc_prod", tools: [{ name: "ping", enabledForPrompt: true }] },
+				],
+				callTool: vi.fn(),
+			}
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
+					getMcpHub: () => mockHub,
+				}),
+			}
+
+			mockTask.assistantMessageContent = [
+				{
+					type: "mcp_tool_use",
+					id: "call_native_mcp_reclaim",
+					name: "mcp--svc_prod--ping",
+					serverName: "svc_prod",
+					toolName: "ping",
+					arguments: {},
+					partial: false,
+				},
+			]
+
+			await presentAssistantMessage(mockTask as unknown as Task, baseSnapshot)
+
+			const askCall = mockTask.ask.mock.calls.find(([kind]) => kind === "use_mcp_server")
+			expect(askCall?.[1]).toContain('"serverName":"svc.prod"')
+			expect(askCall?.[1]).toContain('"toolName":"ping"')
+		})
+
+		it("runs the original tool behind a suffixed segment for colliding tool names", async () => {
+			vi.mocked(validateToolUse).mockReset()
+			vi.mocked(validateToolUse).mockImplementation(() => undefined)
+			// "System.readFile" and "System_readFile" share the base segment,
+			// so the literal tool was generated as System_readFile_2. Calling
+			// that generated name must execute the literal original, not the
+			// dotted tool that exact-first lookup would pick (thread 4680575773).
+			const mockHub = {
+				findGeneratedToolBinding: (name: string) =>
+					name === "mcp--server--System_readFile_2"
+						? { serverName: "server", toolName: "System_readFile" }
+						: null,
+				findServerNameBySanitizedName: () => "server",
+				getAllServers: () => [
+					{
+						name: "server",
+						tools: [
+							{ name: "System.readFile", enabledForPrompt: true },
+							{ name: "System_readFile", enabledForPrompt: true },
+						],
+					},
+				],
+				callTool: vi.fn(),
+			}
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
+					getMcpHub: () => mockHub,
+				}),
+			}
+
+			mockTask.assistantMessageContent = [
+				{
+					type: "mcp_tool_use",
+					id: "call_native_mcp_collision",
+					name: "mcp--server--System_readFile_2",
+					serverName: "server",
+					toolName: "System_readFile_2",
+					arguments: {},
+					partial: false,
+				},
+			]
+
+			await presentAssistantMessage(mockTask as unknown as Task, baseSnapshot)
+
+			const askCall = mockTask.ask.mock.calls.find(([kind]) => kind === "use_mcp_server")
+			expect(askCall?.[1]).toContain('"toolName":"System_readFile"')
 		})
 	})
 
@@ -788,6 +891,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					}),
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}
@@ -828,6 +932,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 		it("enforces the snapshot's disabledTools even when live state allows the tool", async () => {
 			const mockHub = {
 				findServerNameBySanitizedName: () => "my_server",
+				findGeneratedToolBinding: () => null,
 				getAllServers: () => [
 					{
 						name: "my_server",
@@ -886,6 +991,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 		it("executes when the snapshot allows the tool even though live state disables it", async () => {
 			const mockHub = {
 				findServerNameBySanitizedName: () => "my_server",
+				findGeneratedToolBinding: () => null,
 				getAllServers: () => [
 					{
 						name: "my_server",
@@ -948,6 +1054,7 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 					getState,
 					getMcpHub: () => ({
 						findServerNameBySanitizedName: () => "my_server",
+						findGeneratedToolBinding: () => null,
 					}),
 				}),
 			}

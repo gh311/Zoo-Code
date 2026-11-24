@@ -369,7 +369,10 @@ describe("presentAssistantMessage - automatic (policy) denials", () => {
 		mockTask.providerRef = {
 			deref: () => ({
 				getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
-				getMcpHub: () => ({ findServerNameBySanitizedName: () => undefined }),
+				getMcpHub: () => ({
+					findServerNameBySanitizedName: () => undefined,
+					findGeneratedToolBinding: () => null,
+				}),
 			}),
 		}
 
@@ -429,7 +432,10 @@ describe("presentAssistantMessage - automatic (policy) denials", () => {
 		mockTask.providerRef = {
 			deref: () => ({
 				getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
-				getMcpHub: () => ({ findServerNameBySanitizedName: () => undefined }),
+				getMcpHub: () => ({
+					findServerNameBySanitizedName: () => undefined,
+					findGeneratedToolBinding: () => null,
+				}),
 			}),
 		}
 
@@ -542,7 +548,10 @@ describe("presentAssistantMessage - automatic (policy) denials", () => {
 		mockTask.providerRef = {
 			deref: () => ({
 				getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
-				getMcpHub: () => ({ findServerNameBySanitizedName: () => undefined }),
+				getMcpHub: () => ({
+					findServerNameBySanitizedName: () => undefined,
+					findGeneratedToolBinding: () => null,
+				}),
 			}),
 		}
 
@@ -582,7 +591,10 @@ describe("presentAssistantMessage - automatic (policy) denials", () => {
 		mockTask.providerRef = {
 			deref: () => ({
 				getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
-				getMcpHub: () => ({ findServerNameBySanitizedName: () => undefined }),
+				getMcpHub: () => ({
+					findServerNameBySanitizedName: () => undefined,
+					findGeneratedToolBinding: () => null,
+				}),
 			}),
 		}
 
@@ -643,7 +655,10 @@ describe("presentAssistantMessage - automatic (policy) denials", () => {
 		mockTask.providerRef = {
 			deref: () => ({
 				getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
-				getMcpHub: () => ({ findServerNameBySanitizedName: () => undefined }),
+				getMcpHub: () => ({
+					findServerNameBySanitizedName: () => undefined,
+					findGeneratedToolBinding: () => null,
+				}),
 			}),
 		}
 

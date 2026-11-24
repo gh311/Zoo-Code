@@ -204,6 +204,25 @@ describe("mcp-name utilities", () => {
 			expect(result.startsWith("mcp--")).toBe(true)
 		})
 
+		it("should shorten the server segment, never the tool segment, at the length limit", () => {
+			// The hub assigns the dotted server a suffixed alias (57 chars)
+			// while the literal underscore server keeps its own name (55
+			// chars). The old whole-name truncation cut tool "x" away and left
+			// a name ending in "--" (issue #2338 review).
+			const suffixedAlias = sanitizeMcpName("a".repeat(27) + "." + "b".repeat(27)) + "_2"
+			const underscoreServer = "a".repeat(27) + "_" + "b".repeat(27)
+
+			const dotted = buildMcpToolName(suffixedAlias, "x")
+			const underscore = buildMcpToolName(underscoreServer, "x")
+
+			expect(dotted).toStrictEqual(`mcp--${suffixedAlias.slice(0, 56)}--x`)
+			expect(dotted.endsWith("--x")).toBe(true)
+			expect(dotted.length).toBeLessThanOrEqual(64)
+			expect(underscore).toStrictEqual(`mcp--${underscoreServer}--x`)
+			// The two generated names stay distinguishable.
+			expect(dotted).not.toBe(underscore)
+		})
+
 		it("should handle names starting with numbers", () => {
 			expect(buildMcpToolName("123server", "456tool")).toBe("mcp--_123server--_456tool")
 		})

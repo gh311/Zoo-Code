@@ -131,7 +131,7 @@ import { openAiModelInfoSaneDefaults, vscodeLlmDefaultModelId, vscodeLlmModels }
 import { makeCreateMessageMetadata } from "../../../test-utils/api"
 import { normalizeToolSchema } from "../../../utils/json-schema"
 import { getMcpServerTools } from "../../../core/prompts/tools/native-tools/mcp_server"
-import type { McpHub } from "../../../services/mcp/McpHub"
+import { McpHub } from "../../../services/mcp/McpHub"
 import { clearAllMocks } from "../../../test-utils/reset"
 import { asyncStreamFrom, collectStream } from "../../../test-utils/stream"
 
@@ -5677,7 +5677,19 @@ describe("recovered parameters for normalized MCP schemas", () => {
 	})
 
 	it("routes a schema built by the MCP tool builder through the same conversion", () => {
-		const mcpHub = {
+		// Drive the real McpHub alias and binding methods with controlled
+		// registry state (the constructor's file watchers are unrelated
+		// here); a broken getServerAlias fallback fails this test.
+		const mcpHub = Object.create(McpHub.prototype) as McpHub
+		const state = mcpHub as unknown as {
+			sanitizedNameRegistry: Map<string, string>
+			generatedToolBindings: Map<string, { serverName: string; toolName: string }>
+			connections: unknown[]
+		}
+		state.sanitizedNameRegistry = new Map()
+		state.generatedToolBindings = new Map()
+		state.connections = []
+		Object.assign(mcpHub, {
 			getServers: () => [
 				{
 					name: "server",
@@ -5692,7 +5704,7 @@ describe("recovered parameters for normalized MCP schemas", () => {
 					],
 				},
 			],
-		} as unknown as McpHub
+		})
 
 		const [tool] = getMcpServerTools(mcpHub)
 		if (tool.type !== "function") {

@@ -45,6 +45,7 @@ import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
+import { normalizeMcpToolName } from "../../utils/mcp-name"
 
 /**
  * Maps a raw, potentially model-controlled tool name to a safe analytics key.
@@ -323,10 +324,22 @@ async function presentAssistantMessageBlock(cline: Task, policySnapshot: Request
 			// We need the original name to find the actual MCP connection
 			const mcpHub = cline.providerRef.deref()?.getMcpHub()
 			let resolvedServerName = mcpBlock.serverName
+			let resolvedToolName = mcpBlock.toolName
 			if (mcpHub) {
-				const originalName = mcpHub.findServerNameBySanitizedName(mcpBlock.serverName)
-				if (originalName) {
-					resolvedServerName = originalName
+				// A generated name stays bound to the server that issued it: the
+				// request advertised this name when it was built, so consult the
+				// generation-time binding before the live alias registry. A server
+				// that connects mid-request and reclaims the alias must not capture
+				// the call (issue #2338 review race).
+				const binding = mcpHub.findGeneratedToolBinding(normalizeMcpToolName(mcpBlock.name))
+				if (binding) {
+					resolvedServerName = binding.serverName
+					resolvedToolName = binding.toolName
+				} else {
+					const originalName = mcpHub.findServerNameBySanitizedName(mcpBlock.serverName)
+					if (originalName) {
+						resolvedServerName = originalName
+					}
 				}
 			}
 
@@ -338,13 +351,13 @@ async function presentAssistantMessageBlock(cline: Task, policySnapshot: Request
 				name: "use_mcp_tool",
 				params: {
 					server_name: resolvedServerName,
-					tool_name: mcpBlock.toolName,
+					tool_name: resolvedToolName,
 					arguments: JSON.stringify(mcpBlock.arguments),
 				},
 				partial: mcpBlock.partial,
 				nativeArgs: {
 					server_name: resolvedServerName,
-					tool_name: mcpBlock.toolName,
+					tool_name: resolvedToolName,
 					arguments: mcpBlock.arguments,
 				},
 			}

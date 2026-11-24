@@ -43,7 +43,7 @@ import { McpOAuthClientProvider } from "./McpOAuthClientProvider"
 import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { injectVariables } from "../../utils/config"
 import { safeWriteJson } from "../../utils/safeWriteJson"
-import { nextServerAlias, sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
+import { nextServerAlias, normalizeForComparison, sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
 import { ToolRouter } from "../tools/ToolRouter"
 
 // Discriminated union for connection states
@@ -199,6 +199,14 @@ export class McpHub {
 	private isProgrammaticUpdate: boolean = false
 	private flagResetTimer?: NodeJS.Timeout
 	private sanitizedNameRegistry: Map<string, string> = new Map()
+	/**
+	 * Full generated tool name (mcp--alias--tool) -> the original server and
+	 * tool that issued it. getMcpServerTools records every advertised name;
+	 * dispatch consults the record before the live registry so a name stays
+	 * bound to its issuing server even after a later registration reclaims
+	 * its alias (issue #2338 review threads 4680494465 and 4680575748).
+	 */
+	private generatedToolBindings: Map<string, { serverName: string; toolName: string }> = new Map()
 	private initializationPromise: Promise<void>
 	private secretStorage?: SecretStorageService
 	private reauthPromises: Map<string, Promise<void>> = new Map()
@@ -1491,6 +1499,19 @@ export class McpHub {
 			return registryMatch
 		}
 
+		// A suffixed alias can still arrive with its hyphens turned into
+		// underscores ("svc_prod-name_2" becomes "svc_prod_name_2"): the exact
+		// lookups above miss and no original name contains the suffix. Compare
+		// normalized registered aliases and return the mapped original name
+		// (issue #2338 review: a call for "svc_prod_name_2" must reach the
+		// server registered under alias "svc_prod-name_2").
+		const normalized = normalizeForComparison(sanitizedServerName)
+		for (const [alias, original] of this.sanitizedNameRegistry) {
+			if (normalizeForComparison(alias) === normalized) {
+				return original
+			}
+		}
+
 		// Use fuzzy matching: treat hyphens and underscores as equivalent
 		const fuzzyMatch = this.connections.find((conn) => toolNamesMatch(conn.server.name, sanitizedServerName))
 		if (fuzzyMatch) {
@@ -1498,6 +1519,25 @@ export class McpHub {
 		}
 
 		return null
+	}
+
+	/**
+	 * Record the issuing server and original tool for a generated tool name.
+	 * getMcpServerTools calls this for every advertised name; each pass
+	 * overwrites the previous binding for that name, so the record follows the
+	 * most recent advertised tool set.
+	 */
+	public registerGeneratedToolName(generatedName: string, serverName: string, toolName: string): void {
+		this.generatedToolBindings.set(generatedName, { serverName, toolName })
+	}
+
+	/**
+	 * The issuing server and original tool for a generated name, or null when
+	 * the model mangled the name beyond the recorded form. Dispatch falls
+	 * back to findServerNameBySanitizedName in that case.
+	 */
+	public findGeneratedToolBinding(generatedName: string): { serverName: string; toolName: string } | null {
+		return this.generatedToolBindings.get(generatedName) ?? null
 	}
 
 	/**
@@ -1698,6 +1738,13 @@ export class McpHub {
 			// The registry key is the assigned alias, which may carry a
 			// collision suffix — remove by original name, not by re-sanitizing.
 			this.removeAliasEntriesFor(name)
+			// Stale generated-name bindings must not outlive their server:
+			// dispatch would otherwise route a call to a deleted server.
+			for (const [generatedName, binding] of this.generatedToolBindings) {
+				if (binding.serverName === name) {
+					this.generatedToolBindings.delete(generatedName)
+				}
+			}
 		}
 	}
 
