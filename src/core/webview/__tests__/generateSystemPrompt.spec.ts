@@ -46,6 +46,15 @@ vi.mock("os-name", () => ({
 
 vi.mock("fs/promises")
 
+// The RULES section gates the "explore the Desktop" example on the Desktop
+// directory existing (issue #1271). Control the gate without touching the
+// real fs; the real module is kept for the String.prototype.toPosix patch.
+const desktopExists = vi.hoisted(() => ({ value: true }))
+vi.mock("../../../utils/path", async (importOriginal) => {
+	const actual = (await importOriginal()) as typeof import("../../../utils/path")
+	return { ...actual, desktopDirectoryExists: () => desktopExists.value }
+})
+
 import * as vscode from "vscode"
 
 import type { ModelInfo } from "@roo-code/types"
@@ -789,6 +798,22 @@ describe("getCapabilitiesSection / getRulesSection fragment gating", () => {
 			)
 			expect(result).not.toContain("the list_files tool")
 			expect(result).not.toContain("Stryker was here!")
+		})
+
+		it("drops the Desktop example when the Desktop directory does not exist", () => {
+			// Issue #1271: systems without a Desktop folder must not get
+			// prompt text that steers the model to explore one.
+			desktopExists.value = false
+			try {
+				const result = getRulesSection(cwd, settings, sectionPolicy(["ask_followup_question", "list_files"]))
+
+				expect(result).toContain(
+					"You are only allowed to ask the user questions using the ask_followup_question tool",
+				)
+				expect(result).not.toContain("list the files in the Desktop")
+			} finally {
+				desktopExists.value = true
+			}
 		})
 
 		it("emits the MCP usage rule only when the mcp group is present and tools or resources are effective", () => {

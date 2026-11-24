@@ -19,6 +19,7 @@ import {
 	insertMention,
 	removeMention,
 	shouldShowContextMenu,
+	openedFileMentionValue,
 	SearchResult,
 } from "@src/utils/context-mentions"
 import { cn } from "@src/lib/utils"
@@ -331,10 +332,12 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				{ type: ContextMenuOptionType.Terminal, value: "terminal" },
 				...gitCommits,
 				...openedTabs
-					.filter((tab) => tab.path)
+					.filter((tab): tab is { label: string; isActive: boolean; path: string } => Boolean(tab.path))
 					.map((tab) => ({
 						type: ContextMenuOptionType.OpenedFile,
-						value: "/" + tab.path,
+						// Tabs without a workspace are posted with absolute
+						// paths (#1271); do not double the leading slash.
+						value: openedFileMentionValue(tab.path),
 					})),
 				...filePaths
 					.map((file) => "/" + file)

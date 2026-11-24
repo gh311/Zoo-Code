@@ -3,7 +3,7 @@ import * as path from "path"
 
 import { listFiles } from "../../services/glob/list-files"
 import { ClineProvider } from "../../core/webview/ClineProvider"
-import { toRelativePath, getWorkspacePath } from "../../utils/path"
+import { toRelativePath, getWorkspacePath, getOpenedTabPath } from "../../utils/path"
 
 const MAX_INITIAL_FILES = 1_000
 
@@ -74,6 +74,7 @@ class WorkspaceTracker {
 	}
 
 	private getOpenedTabsInfo() {
+		const cwd = this.cwd
 		return vscode.window.tabGroups.all.reduce(
 			(acc, group) => {
 				const groupTabs = group.tabs
@@ -81,7 +82,9 @@ class WorkspaceTracker {
 					.map((tab) => ({
 						label: tab.label,
 						isActive: tab.isActive,
-						path: toRelativePath((tab.input as vscode.TabInputText).uri.fsPath, this.cwd || ""),
+						// Without a workspace root the absolute path is kept, so
+						// @file mentions resolve (issue #1271).
+						path: getOpenedTabPath((tab.input as vscode.TabInputText).uri.fsPath, cwd),
 					}))
 
 				groupTabs.forEach((tab) => (tab.isActive ? acc.unshift(tab) : acc.push(tab)))
@@ -120,11 +123,11 @@ class WorkspaceTracker {
 			clearTimeout(this.updateTimer)
 		}
 		this.updateTimer = setTimeout(() => {
-			if (!this.cwd) {
-				return
-			}
-
-			const relativeFilePaths = Array.from(this.filePaths).map((file) => toRelativePath(file, this.cwd))
+			const cwd = this.cwd
+			// Without a workspace root there is no cwd to list files for, but
+			// open tabs must still reach the webview so @file mentions work
+			// (issue #1271).
+			const relativeFilePaths = cwd ? Array.from(this.filePaths).map((file) => toRelativePath(file, cwd)) : []
 			void this.providerRef.deref()?.postMessageToWebview({
 				type: "workspaceUpdated",
 				filePaths: relativeFilePaths,

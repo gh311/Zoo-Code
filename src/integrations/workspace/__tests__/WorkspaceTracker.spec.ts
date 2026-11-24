@@ -24,6 +24,15 @@ vitest.mock("../../../utils/path", () => ({
 		// Add trailing slash if original path had one
 		return path.endsWith("/") ? normalizedPath + "/" : normalizedPath
 	}),
+	getOpenedTabPath: vitest.fn(function (fsPath: string, cwd: string) {
+		// Mirror the real helper: relative to the workspace root, or the
+		// absolute path kept as-is when no workspace is open (#1271).
+		if (!cwd) {
+			return fsPath.replace(/\\/g, "/")
+		}
+		const relativePath = require("path").relative(cwd, fsPath).replace(/\\/g, "/")
+		return fsPath.endsWith("/") ? relativePath + "/" : relativePath
+	}),
 }))
 
 // Mock watcher - must be defined after mockDispose but before vitest.mock("vscode")
@@ -35,13 +44,17 @@ const mockWatcher = {
 
 // Mock vscode
 vitest.mock("vscode", () => ({
+	// The tracker filters tabs with `tab.input instanceof vscode.TabInputText`.
+	TabInputText: class TabInputText {
+		constructor(public uri: { fsPath: string }) {}
+	},
 	window: {
 		tabGroups: {
 			onDidChangeTabs: vitest.fn(function (callback) {
 				registeredTabChangeCallback = callback
 				return { dispose: mockDispose }
 			}),
-			all: [],
+			all: [] as Array<{ tabs: Array<Record<string, unknown>> }>,
 		},
 		onDidChangeActiveTextEditor: vitest.fn(function () {
 			return { dispose: vitest.fn() }
@@ -372,5 +385,93 @@ describe("WorkspaceTracker", () => {
 
 		// No postMessage should be called after dispose
 		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	describe("without an open workspace", () => {
+		// Builds a tabGroups.all entry whose inputs are real mock TabInputText
+		// instances, so the tracker's instanceof filter keeps them.
+		const makeTabs = (paths: Array<[string, string, boolean]>) => [
+			{
+				tabs: paths.map(([label, fsPath, isActive]) => ({
+					label,
+					isActive,
+					input: new (vscode.TabInputText as unknown as new (uri: { fsPath: string }) => unknown)({ fsPath }),
+				})),
+			},
+		]
+		const setTabs = (groups: Array<{ tabs: Array<Record<string, unknown>> }>) => {
+			;(vscode.window.tabGroups as unknown as { all: Array<{ tabs: Array<Record<string, unknown>> }> }).all =
+				groups
+		}
+
+		afterEach(() => {
+			setTabs([])
+		})
+
+		it("should post openedTabs with absolute paths when no workspace is open", async () => {
+			;(getWorkspacePath as Mock).mockReturnValue("")
+			setTabs(
+				makeTabs([
+					["notes.txt", "/home/user/notes.txt", true],
+					["todo.md", "/home/user/todo.md", false],
+				]),
+			)
+
+			// Tracker created with no workspace: the steady state of issue #1271.
+			const tracker = new WorkspaceTracker(mockProvider)
+			try {
+				await registeredTabChangeCallback!()
+				vitest.advanceTimersByTime(300)
+
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "workspaceUpdated",
+					filePaths: [],
+					openedTabs: [
+						{ label: "notes.txt", isActive: true, path: "/home/user/notes.txt" },
+						{ label: "todo.md", isActive: false, path: "/home/user/todo.md" },
+					],
+				})
+			} finally {
+				tracker.dispose()
+			}
+		})
+
+		it("should post openedTabs with absolute paths when the workspace is closed", async () => {
+			// Tracker starts with a workspace, then the workspace goes away.
+			;(getWorkspacePath as Mock).mockReturnValue("/test/workspace")
+			setTabs(makeTabs([["notes.txt", "/home/user/notes.txt", true]]))
+
+			;(getWorkspacePath as Mock).mockReturnValue("")
+			await registeredTabChangeCallback!()
+			await vitest.advanceTimersByTimeAsync(300)
+
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "workspaceUpdated",
+				filePaths: [],
+				openedTabs: [{ label: "notes.txt", isActive: true, path: "/home/user/notes.txt" }],
+			})
+		})
+
+		it("should not scan files when no workspace is open", async () => {
+			;(getWorkspacePath as Mock).mockReturnValue("")
+
+			await workspaceTracker.initializeFilePaths()
+
+			expect(listFiles).not.toHaveBeenCalled()
+			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+		})
+
+		it("should keep opened tab paths relative to the workspace root", async () => {
+			setTabs(makeTabs([["file1.ts", "/test/workspace/file1.ts", true]]))
+
+			const [[callback]] = mockOnDidCreate.mock.calls
+			await callback({ fsPath: "/test/workspace/other.ts" })
+			vitest.runAllTimers()
+
+			const calls = (mockProvider.postMessageToWebview as Mock).mock.calls
+			const withTabs = calls.filter((call) => call[0].openedTabs.length > 0)
+			expect(withTabs.length).toBeGreaterThan(0)
+			expect(withTabs[0][0].openedTabs).toEqual([{ label: "file1.ts", isActive: true, path: "file1.ts" }])
+		})
 	})
 })

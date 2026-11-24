@@ -25,6 +25,16 @@ function getBasename(filepath: string): string {
 	return filepath.split("/").pop() || filepath
 }
 
+/**
+ * Mention value for an opened-file tab. Tab paths are relative to the
+ * workspace root, or absolute when VS Code has no workspace open (#1271).
+ * Absolute paths already start with "/", so they are not prefixed again —
+ * the mention stays a single-slash absolute path.
+ */
+export function openedFileMentionValue(tabPath: string): string {
+	return tabPath.startsWith("/") ? tabPath : `/${tabPath}`
+}
+
 export function insertMention(
 	text: string,
 	position: number,

@@ -9,7 +9,7 @@ import * as path from "path"
 // against a `resolve.alias` mapping.
 import * as vscodeMock from "vscode"
 
-import { arePathsEqual, getReadablePath, getWorkspacePath, getWorkspacePathForContext } from "../path"
+import { arePathsEqual, getReadablePath, getWorkspacePath, getWorkspacePathForContext, getOpenedTabPath } from "../path"
 
 // Loose typing for the mock object — the file is plain JS and exposes a
 // hand-rolled subset of the VS Code API.
@@ -390,6 +390,56 @@ describe("Path Utilities", () => {
 					? "C:\\Users\\test\\project\\src\\file.txt"
 					: "/Users/test/project/./src/../src/file.txt"
 			expect(getReadablePath(cwd, filePath)).toBe("src/file.txt")
+		})
+	})
+
+	describe("getOpenedTabPath", () => {
+		it("should return the path relative to the workspace root", () => {
+			const wsRoot = process.platform === "win32" ? "C:\\Users\\test\\ws" : "/Users/test/ws"
+			const tabPath = path.join(wsRoot, "src", "file.txt")
+			expect(getOpenedTabPath(tabPath, wsRoot)).toBe(
+				process.platform === "win32" ? "src\\file.txt".replace(/\\/g, "/") : "src/file.txt",
+			)
+		})
+
+		it("should keep the absolute path when no workspace is open", () => {
+			const tabPath = process.platform === "win32" ? "C:\\Users\\test\\notes.txt" : "/home/user/notes.txt"
+			expect(getOpenedTabPath(tabPath, "")).toBe(tabPath.replace(/\\/g, "/"))
+		})
+	})
+
+	describe("getNoWorkspaceFallbackPath", () => {
+		// vitest.setup.ts imports utils/path (for String.prototype.toPosix)
+		// before any mock here can apply, so these fs-dependent helpers are
+		// loaded from a fresh module graph with a controlled "fs".
+		const loadWithDesktop = async (desktopExists: boolean) => {
+			vi.resetModules()
+			vi.doMock("fs", () => ({ existsSync: vitest.fn().mockReturnValue(desktopExists) }))
+			return await import("../path")
+		}
+
+		const desktop = path.join(os.homedir(), "Desktop")
+
+		it("should use Desktop when it exists", async () => {
+			const { getNoWorkspaceFallbackPath } = await loadWithDesktop(true)
+			expect(getNoWorkspaceFallbackPath()).toBe(desktop)
+		})
+
+		it("should fall back to the home directory when Desktop is missing", async () => {
+			const { getNoWorkspaceFallbackPath } = await loadWithDesktop(false)
+			expect(getNoWorkspaceFallbackPath()).toBe(os.homedir())
+		})
+	})
+
+	describe("desktopDirectoryExists", () => {
+		it("should mirror the fs check for the Desktop directory", async () => {
+			vi.resetModules()
+			vi.doMock("fs", () => ({ existsSync: vitest.fn().mockReturnValue(true) }))
+			expect((await import("../path")).desktopDirectoryExists()).toBe(true)
+
+			vi.resetModules()
+			vi.doMock("fs", () => ({ existsSync: vitest.fn().mockReturnValue(false) }))
+			expect((await import("../path")).desktopDirectoryExists()).toBe(false)
 		})
 	})
 })

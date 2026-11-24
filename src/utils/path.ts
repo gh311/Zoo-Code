@@ -1,5 +1,6 @@
 import * as path from "path"
 import os from "os"
+import { existsSync } from "fs"
 import * as vscode from "vscode"
 
 import { Package } from "../shared/package"
@@ -112,6 +113,38 @@ export const toRelativePath = (filePath: string, cwd: string) => {
 	const relativePath = path.relative(cwd, filePath).toPosix()
 	return filePath.endsWith("/") ? relativePath + "/" : relativePath
 }
+
+/**
+ * Path sent to the webview for an open editor tab (issue #1271).
+ * With a workspace root the tab path is relative to it, as before.
+ * Without one there is no root to resolve against, so the absolute path is
+ * kept: the @file mention built from it resolves through path.resolve as an
+ * absolute input, and the model can open the file the user has open.
+ */
+export const getOpenedTabPath = (fsPath: string, cwd: string): string =>
+	cwd ? toRelativePath(fsPath, cwd) : fsPath.toPosix()
+
+/**
+ * Whether the Desktop directory exists on this system. Some users have no
+ * Desktop (for example a home folder named "desktop", lowercase). Prompt
+ * text that steers the model to explore the Desktop is gated on this.
+ */
+export function desktopDirectoryExists(): boolean {
+	try {
+		return existsSync(path.join(os.homedir(), "Desktop"))
+	} catch {
+		return false
+	}
+}
+
+/**
+ * Directory a task operates from when VS Code has no workspace open.
+ * Desktop stays the long-standing default, but only when it exists —
+ * otherwise the home directory is used so the cwd is never a path that
+ * does not exist on this system (issue #1271).
+ */
+export const getNoWorkspaceFallbackPath = (): string =>
+	desktopDirectoryExists() ? path.join(os.homedir(), "Desktop") : os.homedir()
 
 /**
  * Strategy used to resolve the workspace root in a multi-root workspace.

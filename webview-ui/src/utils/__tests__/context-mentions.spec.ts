@@ -5,6 +5,7 @@ import {
 	removeMention,
 	getContextMenuOptions,
 	shouldShowContextMenu,
+	openedFileMentionValue,
 	ContextMenuOptionType,
 	ContextMenuQueryItem,
 	SearchResult,
@@ -149,6 +150,25 @@ describe("insertMention", () => {
 
 			expect(result.newValue).toBe("/code @src/file.ts ")
 			expect(result.mentionIndex).toBe(6)
+		})
+	})
+
+	describe("openedFileMentionValue", () => {
+		it("should prefix a workspace-relative tab path with a slash", () => {
+			expect(openedFileMentionValue("src/file.ts")).toBe("/src/file.ts")
+		})
+
+		it("should keep an absolute tab path unchanged (no workspace open)", () => {
+			// Issue #1271: tabs are posted with absolute paths when no
+			// workspace is open. The mention must stay a single-slash
+			// absolute path, not '//home/...'.
+			expect(openedFileMentionValue("/home/user/notes.txt")).toBe("/home/user/notes.txt")
+		})
+
+		it("should produce a mention that insertMention keeps intact", () => {
+			const value = openedFileMentionValue("/home/user/notes.txt")
+			const result = insertMention("Hello @", 7, value)
+			expect(result.newValue).toBe("Hello @/home/user/notes.txt ")
 		})
 	})
 })
