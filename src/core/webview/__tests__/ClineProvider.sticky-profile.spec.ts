@@ -1146,6 +1146,104 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
 		})
 
+		it("keeps the task on the current profile when the re-stick write fails at the keep-current path (#970 review round 8)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Same fixture as the keep-current test: the task last ran on
+			// "saved-profile"; the user has since switched to "current-profile".
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "current-profile")
+			await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+			await provider.contextProxy.setValue("apiModelId", "gpt-current-256k")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "current-profile", id: "current-profile-id", apiProvider: providerIdentifiers.openai },
+			])
+
+			// The re-stick write fails at the store.
+			const logSpy = vi.spyOn(provider, "log")
+			vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(new Error("disk full"))
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			// The failure is logged with the re-stuck name, and restoration
+			// continues on the in-memory re-stuck name.
+			expect(logSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to persist re-stuck provider profile 'current-profile'"),
+			)
+
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("current-profile")
+			// The task serves the current profile's exact settings.
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("gpt-current-256k")
+		})
+
+		it("installs the re-stuck pair when the re-stick write fails at the install point (#970 review round 8)", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			const historyItem: HistoryItem = {
+				id: "test-task-id",
+				number: 1,
+				ts: Date.now(),
+				task: "Test task",
+				tokensIn: 100,
+				tokensOut: 200,
+				cacheWrites: 0,
+				cacheReads: 0,
+				totalCost: 0.001,
+				mode: "code",
+				apiConfigName: "saved-profile",
+			}
+			await provider.contextProxy.setValue("currentApiConfigName", "saved-profile")
+
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: providerIdentifiers.anthropic },
+				{ name: "switched-profile", id: "switched-profile-id", apiProvider: providerIdentifiers.openai },
+			])
+
+			// A switch lands mid-restore; every bounded-round write then
+			// rejects at the store.
+			cloudServiceMock.getAllowList.mockImplementationOnce(async () => {
+				await provider.contextProxy.setValue("currentApiConfigName", "switched-profile")
+				await provider.contextProxy.setValue("apiProvider", providerIdentifiers.openai)
+				await provider.contextProxy.setValue("apiModelId", "switched-256k")
+			})
+
+			const logSpy = vi.spyOn(provider, "log")
+			vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(new Error("disk full"))
+
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			// The failing write logs once, but restoration is not aborted:
+			// the round already re-stuck the in-memory name, so the next
+			// round sees no difference and the loop terminates.
+			const persistFailures = logSpy.mock.calls.filter(([m]) =>
+				String(m).includes("Failed to persist re-stuck provider profile 'switched-profile'"),
+			)
+			expect(persistFailures.length).toBe(1)
+
+			// The Task still installs with the re-stuck name and the captured
+			// serving settings.
+			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+			expect(taskOptions?.apiConfiguration?.apiModelId).toBe("switched-256k")
+		})
+
 		it("persists the re-stuck profile name through the store write path without mutating the cached entry (#970 review round 4)", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
