@@ -22,7 +22,12 @@ import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { getReadablePath } from "../../utils/path"
 import { resolveApprovalFileTarget } from "./helpers/approvalFileTarget"
-import { extractTextFromFile, addLineNumbers, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
+import {
+	extractTextFromFile,
+	extractTextFromFileWithMetadata,
+	addLineNumbers,
+	getSupportedBinaryFormats,
+} from "../../integrations/misc/extract-text"
 import { readWithIndentation, readWithSlice } from "../../integrations/misc/indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 import type { ToolUse, PushToolResult } from "../../shared/tools"
@@ -213,6 +218,26 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						continue
 					}
 
+					// Extractable formats that pass the binary probe as text
+					// (e.g. .ipynb): read them by their EXTRACTED lines, so
+					// offset/limit use the same line coordinates the @ mention
+					// truncation notice advertises for these formats. Raw JSON
+					// lines have no cell correspondence, so an advertised
+					// offset would fail there (#1539, PR #2680).
+					if (
+						entry.mode !== "indentation" &&
+						getSupportedBinaryFormats().includes(path.extname(relPath).toLowerCase())
+					) {
+						const result = await this.processExtractedTextFile(fullPath, entry)
+
+						await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
+
+						updateFileResult(relPath, {
+							nativeContent: `File: ${relPath}\n${result}`,
+						})
+						continue
+					}
+
 					// Read text file content with lossy UTF-8 conversion
 					// Reading as Buffer first allows graceful handling of non-UTF8 bytes
 					// (they become U+FFFD replacement characters instead of throwing)
@@ -326,6 +351,49 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 	${result.content}`
 		} else if (result.returnedLines === 0 && result.totalLines === 0) {
 			output = "Note: File is empty"
+		}
+
+		return output
+	}
+
+	/**
+	 * Read a supported extractable format (e.g. .ipynb) by its extracted
+	 * lines, so offset/limit address the same line coordinates the @
+	 * mention truncation notice advertises for these formats. The
+	 * extractor numbers every extracted line ("N | "), so the slice
+	 * keeps those numbers and no re-numbering happens here.
+	 */
+	private async processExtractedTextFile(fullPath: string, entry: InternalFileEntry): Promise<string> {
+		const extracted = await extractTextFromFileWithMetadata(fullPath)
+
+		if (extracted.content === "") {
+			return "Note: File is empty"
+		}
+
+		// Slice mode coordinates: offset is 1-based, as in processTextFile.
+		const lines = extracted.content.split("\n")
+		const totalLines = lines.length
+		const offset1 = entry.offset ?? 1
+		const offset0 = Math.max(0, offset1 - 1)
+		const limit = entry.limit ?? DEFAULT_LINE_LIMIT
+
+		if (offset0 >= totalLines) {
+			return `Error: offset ${offset1} is beyond file end (${totalLines} lines)`
+		}
+
+		const endIdx = Math.min(offset0 + limit, totalLines)
+		const selected = lines.slice(offset0, endIdx)
+
+		let output = selected.join("\n")
+
+		if (endIdx < totalLines) {
+			const endLine = offset1 + selected.length - 1
+			// Put truncation warning at TOP to match the @ mention format
+			output =
+				`IMPORTANT: File content truncated.\n` +
+				`Status: Showing lines ${offset1}-${endLine} of ${totalLines} total lines.\n` +
+				`To read more: Use the read_file tool with offset=${endLine + 1} and limit=${limit}.\n\n` +
+				output
 		}
 
 		return output
