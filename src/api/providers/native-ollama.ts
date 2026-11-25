@@ -16,6 +16,7 @@ import {
 } from "./utils/abort-signal"
 import { getLoggableOrigin } from "./utils/endpoint-origin"
 import { TagMatcher } from "../../utils/tag-matcher"
+import { extractLeakedToolCalls } from "./vscode-lm"
 import { isProxyEnabled } from "../../utils/networkProxy"
 import type {
 	SingleCompletionHandler,
@@ -502,6 +503,21 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 					}) as const,
 			)
 
+			// Offered tools, for recovering pseudo-call blocks embedded in content
+			// (models that emit tool calls as text instead of structured tool_calls).
+			const providedTools = (metadata?.tools ?? []).filter(
+				(tool): tool is OpenAI.Chat.ChatCompletionTool & { type: "function" } => tool?.type === "function",
+			)
+			const providedToolSchemas = new Map(
+				providedTools
+					.filter((tool) => (tool.function as { name?: string } | undefined)?.name)
+					.map((tool) => [
+						(tool.function as { name: string }).name,
+						(tool.function as { parameters?: unknown }).parameters as Record<string, unknown> | undefined,
+					]),
+			)
+			const recoverPseudoCalls = providedToolSchemas.size > 0
+
 			// Build the shared chat options and conditional think parameter.
 			// Conditionally enabling Ollama's native think parameter lets
 			// reasoning models (qwen3, deepseek-r1, etc.) emit thinking via
@@ -536,6 +552,9 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 			let toolCallIndex = 0
 			// Track tool call IDs for emitting end events
 			const toolCallIds: string[] = []
+			// Buffer for pseudo-call recovery from content
+			const pseudoCallIds: string[] = []
+			let textBuffer = ""
 
 			try {
 				for await (const chunk of stream) {
@@ -554,7 +573,11 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 					if (typeof chunk.message.content === "string" && chunk.message.content.length > 0) {
 						// Process content through matcher for reasoning detection
 						for (const matcherChunk of matcher.update(chunk.message.content)) {
-							yield matcherChunk
+							if (recoverPseudoCalls && matcherChunk.type === "text") {
+								textBuffer += matcherChunk.text
+							} else {
+								yield matcherChunk
+							}
 						}
 					}
 
@@ -588,7 +611,32 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 
 				// Yield any remaining content from the matcher
 				for (const chunk of matcher.final()) {
-					yield chunk
+					if (recoverPseudoCalls && chunk.type === "text") {
+						textBuffer += chunk.text
+					} else {
+						yield chunk
+					}
+				}
+
+				// Recover pseudo-call blocks embedded in accumulated text content
+				if (recoverPseudoCalls && textBuffer.length > 0) {
+					const { calls, leftoverText } = extractLeakedToolCalls(textBuffer, providedToolSchemas)
+					if (leftoverText) {
+						yield { type: "text", text: leftoverText }
+					}
+					for (const call of calls) {
+						const id = `ollama-tool-${toolCallIndex}`
+						pseudoCallIds.push(id)
+						toolCallIds.push(id)
+						yield {
+							type: "tool_call_partial",
+							index: toolCallIndex,
+							id,
+							name: call.name,
+							arguments: JSON.stringify(call.input),
+						}
+						toolCallIndex++
+					}
 				}
 
 				for (const toolCallId of toolCallIds) {
