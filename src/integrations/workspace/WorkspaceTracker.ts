@@ -27,6 +27,10 @@ class WorkspaceTracker {
 	async initializeFilePaths() {
 		// should not auto get filepaths for desktop since it would immediately show permission popup before cline ever creates a file
 		if (!this.cwd) {
+			// Nothing to scan without a root, but a freshly launched webview
+			// must still see the open tabs so @file mentions resolve (#1271)
+			// — same payload workspaceDidUpdate posts on a tab change.
+			this.workspaceDidUpdate()
 			return
 		}
 		const tempCwd = this.cwd

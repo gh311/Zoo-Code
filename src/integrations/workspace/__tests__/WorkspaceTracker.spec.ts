@@ -13,27 +13,16 @@ const mockDispose = vitest.fn()
 // Store registered tab change callback
 let registeredTabChangeCallback: (() => Promise<void>) | null = null
 
-// Mock workspace path
-vitest.mock("../../../utils/path", () => ({
-	getWorkspacePath: vitest.fn().mockReturnValue("/test/workspace"),
-	toRelativePath: vitest.fn(function (path, cwd) {
-		// Handle both Windows and POSIX paths by using path.relative
-		const relativePath = require("path").relative(cwd, path)
-		// Convert to forward slashes for consistency
-		const normalizedPath = relativePath.replace(/\\/g, "/")
-		// Add trailing slash if original path had one
-		return path.endsWith("/") ? normalizedPath + "/" : normalizedPath
-	}),
-	getOpenedTabPath: vitest.fn(function (fsPath: string, cwd: string) {
-		// Mirror the real helper: relative to the workspace root, or the
-		// absolute path kept as-is when no workspace is open (#1271).
-		if (!cwd) {
-			return fsPath.replace(/\\/g, "/")
-		}
-		const relativePath = require("path").relative(cwd, fsPath).replace(/\\/g, "/")
-		return fsPath.endsWith("/") ? relativePath + "/" : relativePath
-	}),
-}))
+// Partial module mock: keep the REAL path helpers (toRelativePath,
+// getOpenedTabPath) and only stub the workspace observation. A hand-copied
+// getOpenedTabPath drifts from the production logic it is supposed to verify.
+vitest.mock("../../../utils/path", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../utils/path")>()
+	return {
+		...actual,
+		getWorkspacePath: vitest.fn().mockReturnValue("/test/workspace"),
+	}
+})
 
 // Mock watcher - must be defined after mockDispose but before vitest.mock("vscode")
 const mockWatcher = {
@@ -452,13 +441,22 @@ describe("WorkspaceTracker", () => {
 			})
 		})
 
-		it("should not scan files when no workspace is open", async () => {
+		it("should post openedTabs without scanning when no workspace is open", async () => {
 			;(getWorkspacePath as Mock).mockReturnValue("")
+			setTabs(makeTabs([["notes.txt", "/home/user/notes.txt", true]]))
 
 			await workspaceTracker.initializeFilePaths()
+			vitest.advanceTimersByTime(300)
 
+			// No file scan (that would immediately show a permission popup), but a
+			// freshly launched webview still sees the open tabs (#1271) — the
+			// same payload workspaceDidUpdate posts on a tab change.
 			expect(listFiles).not.toHaveBeenCalled()
-			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "workspaceUpdated",
+				filePaths: [],
+				openedTabs: [{ label: "notes.txt", isActive: true, path: "/home/user/notes.txt" }],
+			})
 		})
 
 		it("should keep opened tab paths relative to the workspace root", async () => {

@@ -20,6 +20,41 @@ import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
 import type { SkillContent } from "../../shared/skills"
 
+/**
+ * Whether a path exists on disk (file or directory).
+ */
+async function pathExists(absPath: string): Promise<boolean> {
+	try {
+		await fs.stat(absPath)
+		return true
+	} catch {
+		return false
+	}
+}
+
+/**
+ * Absolute path for a mention, in two attempts (#1271).
+ *
+ * First cwd-relative: with a workspace open, '@/src/file.ts' must keep
+ * resolving under the task cwd. But an open tab OUTSIDE the workspace is
+ * emitted as a single-slash absolute mention ('@/tmp/notes.txt'), and
+ * naively stripping the slash would pin it under the cwd. When the
+ * cwd-relative path does not exist and the raw mention (with its leading
+ * slash) is absolute, fall back to the raw absolute path. The Windows
+ * '/C:/Users/...' form already resolves via the cwd-relative attempt and is
+ * unaffected.
+ */
+async function resolveMentionAbsPath(cwd: string, strippedPath: string, rawMention: string): Promise<string> {
+	const cwdResolved = path.resolve(cwd, strippedPath)
+	if (await pathExists(cwdResolved)) {
+		return cwdResolved
+	}
+	if (path.isAbsolute(rawMention)) {
+		return path.resolve(unescapeSpaces(rawMention))
+	}
+	return cwdResolved
+}
+
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
 		return
@@ -28,7 +63,7 @@ export async function openMention(cwd: string, mention?: string): Promise<void> 
 	if (mention.startsWith("/")) {
 		// Slice off the leading slash and unescape any spaces in the path
 		const relPath = unescapeSpaces(mention.slice(1))
-		const absPath = path.resolve(cwd, relPath)
+		const absPath = await resolveMentionAbsPath(cwd, relPath, mention)
 		if (mention.endsWith("/")) {
 			vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(absPath))
 		} else {
@@ -270,7 +305,11 @@ async function getFileOrFolderContentWithMetadata(
 	fileContextTracker?: FileContextTracker,
 ): Promise<MentionContentBlock> {
 	const unescapedPath = unescapeSpaces(mentionPath)
-	const absPath = path.resolve(cwd, unescapedPath)
+	// Two-attempt resolution (#1271): '@/x' stays cwd-relative first, but an
+	// open tab outside the workspace is emitted as a single-slash absolute
+	// mention; when the cwd-relative path does not exist, resolve the raw
+	// absolute mention path instead of pinning the tab under the cwd.
+	const absPath = await resolveMentionAbsPath(cwd, unescapedPath, `/${mentionPath}`)
 	const isFolder = mentionPath.endsWith("/")
 
 	try {
