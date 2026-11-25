@@ -118,6 +118,7 @@ import {
 	getVsCodeLmModels,
 	extractLeakedToolCalls,
 	trailingPartialToolMarkerLength,
+	unresolvedRecoveryStartIndex,
 	middleOutTruncate,
 	estimateMessagesChars,
 	truncateToolResultsToFitWindow,
@@ -5169,6 +5170,28 @@ describe("leaked tool-call recovery", () => {
 
 		it("does not hold back an over-long generic tag fragment", () => {
 			expect(trailingPartialToolMarkerLength("text <" + "a".repeat(200))).toBe(0)
+		})
+	})
+
+	describe("unresolvedRecoveryStartIndex", () => {
+		it("lets everything stream when no marker or split prefix exists", () => {
+			expect(unresolvedRecoveryStartIndex("hello world")).toBe(11)
+			expect(unresolvedRecoveryStartIndex("a < b and c > d")).toBe(15)
+			expect(unresolvedRecoveryStartIndex("")).toBe(0)
+		})
+
+		it("holds from a split marker prefix at the end of the buffer", () => {
+			expect(unresolvedRecoveryStartIndex("some text <in")).toBe(10)
+			expect(unresolvedRecoveryStartIndex("we need <function_")).toBe(8)
+		})
+
+		it("holds from a complete wrapper or invoke open tag", () => {
+			expect(unresolvedRecoveryStartIndex("text <function_calls>")).toBe(5)
+			expect(unresolvedRecoveryStartIndex('x<invoke name="a">body')).toBe(1)
+		})
+
+		it("holds from a stray wrapper close tag so wrapper state stays intact", () => {
+			expect(unresolvedRecoveryStartIndex("text </function_calls> x")).toBe(5)
 		})
 	})
 

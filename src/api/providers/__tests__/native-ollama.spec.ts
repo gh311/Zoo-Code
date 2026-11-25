@@ -134,6 +134,106 @@ describe("NativeOllamaHandler", () => {
 			expect(results[2]).toEqual({ type: "usage", inputTokens: 10, outputTokens: 2 })
 		})
 
+		const weatherTool = {
+			type: "function",
+			function: {
+				name: "get_weather",
+				description: "Get the weather for a location",
+				parameters: {
+					type: "object",
+					properties: { location: { type: "string" } },
+					required: ["location"],
+				},
+			},
+		} as const
+
+		it("should stream plain text before the stream ends when tools are offered", async () => {
+			// Recovery used to buffer every text chunk until the stream closed,
+			// so the caller saw nothing mid-stream and lost it all on a failure.
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "Hello " } }
+				await new Promise((resolve) => nativeSetTimeout(resolve, 20))
+				yield { message: { content: "world" } }
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const iterator = stream[Symbol.asyncIterator]()
+
+			const first = await withDeadline(iterator.next())
+			expect(first.value).toEqual({ type: "text", text: "Hello " })
+			const second = await withDeadline(iterator.next())
+			expect(second.value).toEqual({ type: "text", text: "world" })
+		})
+
+		it("should keep streaming ordinary prose that contains a stray angle bracket", async () => {
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "2 < 3 and " } }
+				yield { message: { content: "5 > 4 with no markers" } }
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			expect(parts[0]).toEqual({ type: "text", text: "2 < 3 and " })
+			expect(parts[1]).toEqual({ type: "text", text: "5 > 4 with no markers" })
+			expect(parts.some((p) => p.type.startsWith("tool_call"))).toBe(false)
+		})
+
+		it("should recover a leaked invoke block split across chunk boundaries when tools are offered", async () => {
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "Running now <function_calls><inv" } }
+				yield { message: { content: 'oke name="get_weather">' } }
+				yield {
+					message: {
+						content: '<parameter name="location">Berlin</parameter></invoke></function_calls>\ndone',
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial")
+			expect(calls).toHaveLength(1)
+			expect(calls[0]).toMatchObject({ name: "get_weather", arguments: '{"location":"Berlin"}' })
+			const text = parts
+				.filter((p) => p.type === "text")
+				.map((p) => (p as { text: string }).text)
+				.join("")
+			expect(text).toBe("Running now \ndone")
+		})
+
+		it("should keep a fence-quoted invoke block as text while streaming the fence prose", async () => {
+			const quoted = '<invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke>'
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "Example:\n```text\n" } }
+				yield { message: { content: quoted } }
+				yield { message: { content: "\n```\nDone" } }
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			expect(parts.some((p) => p.type.startsWith("tool_call"))).toBe(false)
+			const text = parts
+				.filter((p) => p.type === "text")
+				.map((p) => (p as { text: string }).text)
+				.join("")
+			expect(text).toBe("Example:\n```text\n" + quoted + "\n```\nDone")
+		})
+
 		it("should classify reasoning chunks by the think tag", async () => {
 			mockChat.mockImplementation(async function* () {
 				yield { message: { content: "<think>secret</think>hi" } }

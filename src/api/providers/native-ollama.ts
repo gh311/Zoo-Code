@@ -16,7 +16,7 @@ import {
 } from "./utils/abort-signal"
 import { getLoggableOrigin } from "./utils/endpoint-origin"
 import { TagMatcher } from "../../utils/tag-matcher"
-import { extractLeakedToolCalls } from "./vscode-lm"
+import { extractLeakedToolCalls, unresolvedRecoveryStartIndex } from "./vscode-lm"
 import { isProxyEnabled } from "../../utils/networkProxy"
 import type {
 	SingleCompletionHandler,
@@ -554,7 +554,24 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 			const toolCallIds: string[] = []
 			// Buffer for pseudo-call recovery from content
 			const pseudoCallIds: string[] = []
-			let textBuffer = ""
+			// Splits streamed text into the safe prefix to yield now and the
+			// unresolved tail that end-of-stream recovery still needs. The
+			// streamed prefix feeds the final scan as its quoting context.
+			const recoveryStream = {
+				buffer: "",
+				streamed: "",
+				take(text: string): string[] {
+					this.buffer += text
+					const holdFrom = unresolvedRecoveryStartIndex(this.buffer)
+					if (holdFrom <= 0) {
+						return []
+					}
+					const safe = this.buffer.slice(0, holdFrom)
+					this.streamed += safe
+					this.buffer = this.buffer.slice(holdFrom)
+					return [safe]
+				},
+			}
 
 			try {
 				for await (const chunk of stream) {
@@ -574,7 +591,12 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 						// Process content through matcher for reasoning detection
 						for (const matcherChunk of matcher.update(chunk.message.content)) {
 							if (recoverPseudoCalls && matcherChunk.type === "text") {
-								textBuffer += matcherChunk.text
+								// Stream text recovery cannot need yet; an
+								// unfinished marker tail holds text back so
+								// split markers resolve intact.
+								for (const safe of recoveryStream.take(matcherChunk.text)) {
+									yield { type: "text", text: safe } as const
+								}
 							} else {
 								yield matcherChunk
 							}
@@ -612,15 +634,23 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 				// Yield any remaining content from the matcher
 				for (const chunk of matcher.final()) {
 					if (recoverPseudoCalls && chunk.type === "text") {
-						textBuffer += chunk.text
+						for (const safe of recoveryStream.take(chunk.text)) {
+							yield { type: "text", text: safe } as const
+						}
 					} else {
 						yield chunk
 					}
 				}
 
-				// Recover pseudo-call blocks embedded in accumulated text content
-				if (recoverPseudoCalls && textBuffer.length > 0) {
-					const { calls, leftoverText } = extractLeakedToolCalls(textBuffer, providedToolSchemas)
+				// Recover pseudo-call blocks from the retained tail. Text already
+				// streamed stays delivered and feeds the scan as context, so the
+				// recovered verdicts match a whole-input pass.
+				if (recoverPseudoCalls && recoveryStream.buffer.length > 0) {
+					const { calls, leftoverText } = extractLeakedToolCalls(
+						recoveryStream.buffer,
+						providedToolSchemas,
+						recoveryStream.streamed,
+					)
 					if (leftoverText) {
 						yield { type: "text", text: leftoverText }
 					}

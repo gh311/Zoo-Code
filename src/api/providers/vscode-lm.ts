@@ -274,6 +274,20 @@ export function trailingPartialToolMarkerLength(text: string): number {
 }
 
 /**
+ * Start of the region of `text` that end-of-stream recovery still needs: a complete or
+ * split `<invoke>`/wrapper marker holds its tail so the block and the prose around it
+ * resolve together. Everything before the index is safe to stream out mid-request.
+ *
+ * @internal Exported for focused implementation tests.
+ */
+export function unresolvedRecoveryStartIndex(text: string): number {
+	const openTag = /<(?:\/)?(?:antml:)?(?:invoke|function_calls)\b/i.exec(text)
+	const partialLen = trailingPartialToolMarkerLength(text)
+	const partialStart = partialLen > 0 ? text.length - partialLen : text.length
+	return openTag ? Math.min(openTag.index, partialStart) : partialStart
+}
+
+/**
  * Words that mark nearby markup as being talked about rather than invoked.
  */
 const QUOTING_CUE_PATTERN =
