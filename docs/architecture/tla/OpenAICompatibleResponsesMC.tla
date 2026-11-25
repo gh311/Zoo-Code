@@ -2,7 +2,8 @@
 \* Finite request boundaries stand for the SDK call. No parser is copied.
 EXTENDS OpenAICompatibleResponses
 CONSTANTS HonorStreaming, MergeExtra, CleanText, RouteOptIn,
-          ForwardTools, ForwardReasoning, ReleaseListener, AttachAfterBuild, RouteCompletions, IsolateSubclasses
+          ForwardTools, ForwardReasoning, ReleaseListener, AttachAfterBuild, RouteCompletions, IsolateSubclasses,
+          PassTransportDeadline
 EffectiveResponses(s) == s.responses /\ (s.compatible \/ ~IsolateSubclasses)
     /\ (s.entrypoint = "message" \/ RouteCompletions)
 RequestOracle == [s \in InputDomain |->
@@ -14,4 +15,9 @@ RequestOracle == [s \in InputDomain |->
      badText |-> s.badText /\ ~CleanText]]
 InitialListenerOracle == [s \in InputDomain |-> ~AttachAfterBuild /\ s.responses /\ s.compatible /\ s.entrypoint = "message" /\ s.signal = "live"]
 CleanupOracle == [attached \in BOOLEAN |-> IF ReleaseListener THEN FALSE ELSE attached]
+\* Fixed transport: the undici Agent carries the configured deadline. Sabotage: the 300 s platform default.
+TransportDeadlineOracle == [s \in InputDomain |->
+    IF PassTransportDeadline THEN
+        IF s.configuredTimeout = "disabled" THEN "disabled" ELSE "configured"
+    ELSE "platform"]
 ====
