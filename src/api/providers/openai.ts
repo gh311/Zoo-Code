@@ -100,49 +100,15 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				"Responses API requires an /openai/v1 base URL for Azure AI Inference. Update the Base URL or disable Use Responses API.",
 			)
 		}
-		if (isAzureV1 || (isAzureOpenAi && this.options.openAiUseResponsesApi && !this.options.azureApiVersion)) {
-			// Azure's v1 API supports Responses without a dated api-version parameter.
-			const responsesBaseURL = isAzureV1
-				? baseURL
-				: `${baseURL.replace(/\/openai\/?$/i, "").replace(/\/$/, "")}/openai/v1`
-			this.client = new OpenAI({
-				baseURL: responsesBaseURL,
-				apiKey,
-				defaultHeaders: headers,
-				timeout: this.timeoutMs,
-				fetch: createUndiciTimeoutFetch(this.timeoutMs),
-			})
-		} else if (isAzureAiInference) {
-			// Azure AI Inference Service (e.g., for DeepSeek) uses a different path structure
-			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
-				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
-				timeout: this.timeoutMs,
-				fetch: createUndiciTimeoutFetch(this.timeoutMs),
-			})
-		} else if (isAzureOpenAi) {
-			// Azure API shape slightly differs from the core API shape:
-			// https://github.com/openai/openai-node?tab=readme-ov-file#microsoft-azure-openai
-			const azureBaseURL = `${baseURL.replace(/\/openai\/?$/i, "").replace(/\/$/, "")}/openai`
-			this.client = new AzureOpenAI({
-				baseURL: azureBaseURL,
-				apiKey,
-				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
-				defaultHeaders: headers,
-				timeout: this.timeoutMs,
-				fetch: createUndiciTimeoutFetch(this.timeoutMs),
-			})
-		} else {
-			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
-				timeout: this.timeoutMs,
-				fetch: createUndiciTimeoutFetch(this.timeoutMs),
-			})
-		}
+		this.client = this.createClient(
+			this.timeoutMs,
+			baseURL,
+			apiKey,
+			isAzureAiInference,
+			isAzureOpenAi,
+			isAzureV1,
+			headers,
+		)
 	}
 
 	override async *createMessage(
@@ -481,6 +447,55 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return modelId.includes("deepseek-reasoner") || (this.options.openAiR1FormatEnabled ?? false)
 	}
 
+	protected createClient(
+		timeout: number,
+		baseURL: string,
+		apiKey: string,
+		isAzureAiInference: boolean,
+		isAzureOpenAi: boolean,
+		isAzureV1: boolean,
+		headers: Record<string, string>,
+	): OpenAI {
+		if (isAzureV1 || (isAzureOpenAi && this.options.openAiUseResponsesApi && !this.options.azureApiVersion)) {
+			const responsesBaseURL = isAzureV1
+				? baseURL
+				: `${baseURL.replace(/\/openai\/?$/i, "").replace(/\/$/, "")}/openai/v1`
+			return new OpenAI({
+				baseURL: responsesBaseURL,
+				apiKey,
+				defaultHeaders: headers,
+				timeout,
+				fetch: createUndiciTimeoutFetch(timeout),
+			})
+		} else if (isAzureAiInference) {
+			return new OpenAI({
+				baseURL,
+				apiKey,
+				defaultHeaders: headers,
+				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
+				timeout,
+				fetch: createUndiciTimeoutFetch(timeout),
+			})
+		} else if (isAzureOpenAi) {
+			const azureBaseURL = `${baseURL.replace(/\/openai\/?$/i, "").replace(/\/$/, "")}/openai`
+			return new AzureOpenAI({
+				baseURL: azureBaseURL,
+				apiKey,
+				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
+				defaultHeaders: headers,
+				timeout,
+				fetch: createUndiciTimeoutFetch(timeout),
+			})
+		}
+		return new OpenAI({
+			baseURL,
+			apiKey,
+			defaultHeaders: headers,
+			timeout,
+			fetch: createUndiciTimeoutFetch(timeout),
+		})
+	}
+
 	override getModel() {
 		const id = this.options.openAiModelId ?? ""
 		const info: ModelInfo = this.options.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults
@@ -506,6 +521,19 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	}
 
 	async completePrompt(prompt: string, options?: CompletePromptOptions): Promise<string> {
+		const effectiveTimeoutMs = hasUsableTimeout(options?.timeoutMs) ? options.timeoutMs : this.timeoutMs
+		const client =
+			effectiveTimeoutMs === this.timeoutMs
+				? this.client
+				: this.createClient(
+						effectiveTimeoutMs,
+						this.options.openAiBaseUrl || "https://api.openai.com/v1",
+						this.options.openAiApiKey ?? NOT_PROVIDED,
+						this._isAzureAiInference(this.options.openAiBaseUrl),
+						isAzureOpenAiBaseUrl(this.options.openAiBaseUrl, this.options.openAiUseAzure),
+						isAzureV1BaseUrl(this.options.openAiBaseUrl || "https://api.openai.com/v1"),
+						{ ...DEFAULT_HEADERS, ...(this.options.openAiHeaders || {}) },
+					)
 		try {
 			if (this.options.openAiUseResponsesApi) {
 				const model = this.getModel()
@@ -517,9 +545,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					messages: [{ role: "user", content: prompt }],
 					tools: undefined,
 					extraBody: this.extraBody,
-					reasoningScope: responsesReasoningScope(this.client.baseURL),
+					reasoningScope: responsesReasoningScope(client.baseURL),
 				})
-				const response = await this.client.responses.create(
+				const response = await client.responses.create(
 					{ ...body, stream: false },
 					{
 						...(options?.abortSignal ? { signal: options.abortSignal } : {}),
@@ -553,7 +581,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let response
 			try {
-				response = await this.client.chat.completions.create(
+				response = await client.chat.completions.create(
 					requestOptions,
 					isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
 				)

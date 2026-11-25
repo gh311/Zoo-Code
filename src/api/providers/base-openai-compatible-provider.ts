@@ -5,6 +5,7 @@ import { type ModelInfo, openAiModelInfoSaneDefaults } from "@roo-code/types"
 
 import { type ApiHandlerOptions, getModelMaxOutputTokens } from "../../shared/api"
 import { createUndiciTimeoutFetch } from "./utils/transport-timeout"
+import { hasUsableTimeout } from "./utils/abort-signal"
 import { TagMatcher } from "../../utils/tag-matcher"
 import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
 import { convertToOpenAiMessages } from "../transform/openai-format"
@@ -60,12 +61,16 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 			throw new Error("API key is required")
 		}
 
-		this.client = new OpenAI({
+		this.client = this.createClient(this.timeoutMs, baseURL)
+	}
+
+	protected createClient(timeout: number, baseURL: string): OpenAI {
+		return new OpenAI({
 			baseURL,
 			apiKey: this.options.apiKey,
 			defaultHeaders: DEFAULT_HEADERS,
-			timeout: this.timeoutMs,
-			fetch: createUndiciTimeoutFetch(this.timeoutMs),
+			timeout,
+			fetch: createUndiciTimeoutFetch(timeout),
 		})
 	}
 
@@ -214,7 +219,10 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 		}
 	}
 
-	async completePrompt(prompt: string, _options?: CompletePromptOptions): Promise<string> {
+	async completePrompt(prompt: string, options?: CompletePromptOptions): Promise<string> {
+		const effectiveTimeoutMs = hasUsableTimeout(options?.timeoutMs) ? options.timeoutMs : this.timeoutMs
+		const client =
+			effectiveTimeoutMs === this.timeoutMs ? this.client : this.createClient(effectiveTimeoutMs, this.baseURL)
 		const { id: modelId, info: modelInfo } = this.getModel()
 
 		const params: OpenAI.Chat.Completions.ChatCompletionCreateParams = {
@@ -228,7 +236,7 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 		}
 
 		try {
-			const response = await this.client.chat.completions.create(params)
+			const response = await client.chat.completions.create(params)
 
 			// Check for provider-specific error responses (e.g., MiniMax base_resp)
 			const responseAny = response as any
