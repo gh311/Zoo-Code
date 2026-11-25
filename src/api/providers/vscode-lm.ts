@@ -712,10 +712,11 @@ export function extractLeakedToolCalls(
 	text: string,
 	validTools: ReadonlySet<string> | LeakedToolSchemas,
 	precedingText = "",
+	allowBareInvoke = false,
 ): { calls: Array<{ name: string; input: Record<string, unknown> }>; leftoverText: string } {
 	const scan = new QuotingScanState()
 	scan.advance(precedingText)
-	return extractLeakedToolCallsWithState(text, validTools, scan)
+	return extractLeakedToolCallsWithState(text, validTools, scan, allowBareInvoke)
 }
 
 /**
@@ -736,11 +737,12 @@ export function extractLeakedToolCallSegments(
 	validTools: ReadonlySet<string> | LeakedToolSchemas,
 	precedingText: string,
 	boundaries: number[],
+	allowBareInvoke = false,
 ): {
 	calls: Array<{ name: string; input: Record<string, unknown>; segment: number }>
 	leftoverText: string
 } {
-	const whole = extractLeakedToolCalls(text, validTools, precedingText)
+	const whole = extractLeakedToolCalls(text, validTools, precedingText, allowBareInvoke)
 	const edges = [
 		0,
 		...[...new Set(boundaries)].filter((b) => b > 0 && b <= text.length).sort((a, b) => a - b),
@@ -758,7 +760,12 @@ export function extractLeakedToolCallSegments(
 	const calls: Array<{ name: string; input: Record<string, unknown>; segment: number }> = []
 	const leftovers: string[] = []
 	for (let i = 0; i + 1 < edges.length; i++) {
-		const part = extractLeakedToolCallsWithState(text.slice(edges[i], edges[i + 1]), validTools, scan)
+		const part = extractLeakedToolCallsWithState(
+			text.slice(edges[i], edges[i + 1]),
+			validTools,
+			scan,
+			allowBareInvoke,
+		)
 		for (const call of part.calls) {
 			calls.push({ ...call, segment: i })
 		}
@@ -774,13 +781,14 @@ export function extractLeakedToolCallSegments(
 	if (!sameVerdicts) {
 		return unplaced
 	}
-	return { calls, leftoverText: leftovers.join("") }
+	return { calls, leftoverText: whole.leftoverText }
 }
 
 function extractLeakedToolCallsWithState(
 	text: string,
 	validTools: ReadonlySet<string> | LeakedToolSchemas,
 	scan: QuotingScanState,
+	allowBareInvoke = false,
 ): { calls: Array<{ name: string; input: Record<string, unknown> }>; leftoverText: string } {
 	const schemaFor = (name: string) =>
 		validTools instanceof Map ? (validTools.get(name) as Record<string, unknown> | undefined) : undefined
@@ -809,7 +817,9 @@ function extractLeakedToolCallsWithState(
 		// block could open a wrapper or fence that changes the verdict on a later block.
 		scannedUpTo = blockEnd
 		const recoverable =
-			validTools.has(name) && scan.isInsideFunctionCallsWrapper() && !isQuotedAsCode(text, blockEnd, scan)
+			validTools.has(name) &&
+			(allowBareInvoke || scan.isInsideFunctionCallsWrapper()) &&
+			!isQuotedAsCode(text, blockEnd, scan)
 		// Parsing may still fail closed when a parameter doesn't match its declared type.
 		const input = recoverable
 			? parseLeakedInvokeParams(text.slice(bodyStart, close.index), schemaFor(name))

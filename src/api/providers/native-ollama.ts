@@ -576,6 +576,11 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 					if (holdFrom <= 0) {
 						return []
 					}
+					// Adjust deferred native-call offsets so they stay valid as the
+					// held prefix is trimmed from the buffer.
+					for (const entry of deferredNativeCalls) {
+						entry.offset = Math.max(0, entry.offset - holdFrom)
+					}
 					const safe = this.buffer.slice(0, holdFrom)
 					this.streamed += safe
 					this.buffer = this.buffer.slice(holdFrom)
@@ -670,7 +675,7 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 				// segment the buffer, and each segment's calls are emitted just
 				// before the native call that follows it, so every tool call
 				// keeps the position the model wrote it at.
-				if (recoverPseudoCalls && recoveryStream.buffer.length > 0) {
+				if (recoverPseudoCalls && (recoveryStream.buffer.length > 0 || deferredNativeCalls.length > 0)) {
 					const boundaries = [...new Set(deferredNativeCalls.map((call) => call.offset))].sort(
 						(a, b) => a - b,
 					)
@@ -679,15 +684,20 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 						providedToolSchemas,
 						recoveryStream.streamed,
 						boundaries,
+						true,
 					)
-					if (leftoverText) {
+					if (recoveryStream.buffer.length > 0 && leftoverText) {
 						yield { type: "text", text: leftoverText }
 					}
 					// An unplaced call means a block straddled a native arrival;
 					// fall back to the whole-text order instead of losing it.
 					const unplaced = calls.some((call) => call.segment < 0)
 					const ordered: Array<{ name: string; args: string; pseudo: boolean }> = []
-					if (unplaced) {
+					if (recoveryStream.buffer.length === 0) {
+						for (const deferred of deferredNativeCalls) {
+							ordered.push({ name: deferred.name, args: deferred.args, pseudo: false })
+						}
+					} else if (unplaced) {
 						for (const deferred of deferredNativeCalls) {
 							ordered.push({ name: deferred.name, args: deferred.args, pseudo: false })
 						}
