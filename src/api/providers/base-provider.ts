@@ -60,10 +60,16 @@ export abstract class BaseProvider implements ApiHandler {
 			// retaining every original required constraint (e.g. nanogpt).
 			const useStrict = !isMcp && strict
 
+			// Native tools may carry an inherited `strict` property on their
+			// function object. Strip it before re-applying the converted value so
+			// routes that opt out of emitting the key (emitStrictKey=false) never
+			// forward a stale `strict: true` (issue #1137, CodeRabbit r2).
+			const { strict: _inheritedStrict, ...functionFields } = tool.function ?? {}
+
 			return {
 				...tool,
 				function: {
-					...tool.function,
+					...functionFields,
 					// Sanitize lone UTF-16 surrogates: providers validating the JSON body
 					// (e.g. DeepSeek) reject the whole request otherwise. See #461.
 					name: sanitizeSurrogates(tool.function.name),

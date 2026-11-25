@@ -477,6 +477,22 @@ describe("LiteLLMHandler", () => {
 								parameters: { type: "object", properties: { path: { type: "string" } } },
 							},
 						},
+						{
+							type: "function",
+							function: {
+								name: "write_file",
+								description: "Write a file",
+								parameters: { type: "object", properties: { path: { type: "string" } } },
+							},
+						},
+						{
+							type: "function",
+							function: {
+								name: "mcp--fs--read",
+								description: "MCP read",
+								parameters: { type: "object", properties: { path: { type: "string" } } },
+							},
+						},
 					],
 				}),
 			)
@@ -486,8 +502,13 @@ describe("LiteLLMHandler", () => {
 				model: "gpt-6-astra",
 				max_completion_tokens: 128_000,
 				reasoning_effort: "medium",
-				tools: [{ type: "function", function: { name: "read_file" } }],
+				tools: [
+					{ type: "function", function: { name: "read_file" } },
+					{ type: "function", function: { name: "write_file" } },
+					{ type: "function", function: { name: "mcp--fs--read" } },
+				],
 			})
+			expect(request.tools.every((t: any) => t.function.strict === undefined)).toBe(true)
 			expect(request.max_tokens).toBeUndefined()
 			expect(request.temperature).toBeUndefined()
 		})
@@ -2517,6 +2538,26 @@ describe("LiteLLMHandler", () => {
 			// reject strict: true (issue #1137), so the flag must stay false.
 			expect(request.tools[0].function.strict).toBeUndefined()
 			// Strict off keeps the declared schema as-is: no required-list rewrite.
+			expect(request.tools[0].function.parameters).toStrictEqual(tool.function.parameters)
+		})
+
+		it("strips an inherited strict key from a native tool", async () => {
+			const tool = {
+				type: "function",
+				function: {
+					name: "read_file",
+					description: "Read a file",
+					strict: true,
+					parameters: { type: "object", properties: { path: { type: "string" } } },
+				},
+			} satisfies OpenAI.Chat.ChatCompletionFunctionTool
+
+			const stream = handler.createMessage(systemPrompt, messages, { taskId: "test-task", tools: [tool] })
+			await collectStream(stream)
+
+			const request = mockCreate.mock.calls[0][0]
+			expect(request.tools).toHaveLength(1)
+			expect(request.tools[0].function.strict).toBeUndefined()
 			expect(request.tools[0].function.parameters).toStrictEqual(tool.function.parameters)
 		})
 	})

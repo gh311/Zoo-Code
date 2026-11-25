@@ -44,7 +44,7 @@ Spec == Init /\ [][Next]_input
 \* The emitter is BaseProvider.convertToolsForOpenAI. The LiteLLM route omits
 \* the strict key entirely; other routes emit it. A non-MCP tool takes its
 \* strict value from the call-site flag when the key is present.
-EmittedStrictKey == ~OmitsStrictKey /\ ~input.isMcp
+EmittedStrictKey == ~OmitsStrictKey
 EmittedStrict == EmittedStrictKey /\ CallSiteFlag /\ ~input.isMcp
 
 TypeOK == input \in Inputs
