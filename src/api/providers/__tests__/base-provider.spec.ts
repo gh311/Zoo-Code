@@ -50,7 +50,12 @@ const acceptsValue = (schema: unknown, value: unknown): boolean => {
 	if (accepts && schema.type !== undefined) {
 		const types: unknown[] = Array.isArray(schema.type) ? schema.type : [schema.type]
 		const jsType = schemaTypeOf(value)
-		if (!types.includes(jsType)) {
+		// JSON Schema treats integers as numbers: a "number" constraint
+		// matches integer values too, while "integer" rejects fractions.
+		const typeMatches = types.some(
+			(t) => t === jsType || (t === "number" && jsType === "integer"),
+		)
+		if (!typeMatches) {
 			accepts = false
 		}
 	}
@@ -877,7 +882,7 @@ describe("BaseProvider", () => {
 					// Both combinators present: each must accept null on its
 					// own, so both gain a null alternative. The fixture stays
 					// satisfiable — a value must satisfy both siblings.
-					format: { anyOf: [{ type: "string" }], oneOf: [{ type: "string" }, { type: "integer" }] },
+					format: { anyOf: [{ type: "string" }], oneOf: [{ type: "string" }] },
 				},
 			}
 
@@ -910,9 +915,10 @@ describe("BaseProvider", () => {
 			// only anyOf would leave oneOf rejecting null (sibling AND). The
 			// fixture is satisfiable: strings satisfy both siblings.
 			expect(format.anyOf).toEqual([{ type: "string" }, { type: "null" }])
-			expect(format.oneOf).toEqual([{ type: "string" }, { type: "integer" }, { type: "null" }])
-			expect(acceptsValue(format, null)).toBe(true)
-			expect(acceptsValue(format, "docx")).toBe(true)
+			expect(format.oneOf).toEqual([{ type: "string" }, { type: "null" }])
+					expect(acceptsValue(format, null)).toBe(true)
+					expect(acceptsValue(format, "docx")).toBe(true)
+					expect(acceptsValue(format, 7)).toBe(false)
 		})
 
 		it("makes an optional enum property accept null while a declared required enum stays unchanged (mock, #547)", () => {

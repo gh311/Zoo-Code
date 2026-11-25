@@ -477,6 +477,22 @@ describe("LiteLLMHandler", () => {
 								parameters: { type: "object", properties: { path: { type: "string" } } },
 							},
 						},
+						{
+							type: "function",
+							function: {
+								name: "write_file",
+								description: "Write a file",
+								parameters: { type: "object", properties: { path: { type: "string" } } },
+							},
+						},
+						{
+							type: "function",
+							function: {
+								name: "mcp--fs--read",
+								description: "MCP read",
+								parameters: { type: "object", properties: { path: { type: "string" } } },
+							},
+						},
 					],
 				}),
 			)
@@ -486,9 +502,13 @@ describe("LiteLLMHandler", () => {
 				model: "gpt-6-astra",
 				max_completion_tokens: 128_000,
 				reasoning_effort: "medium",
-				tools: [{ type: "function", function: { name: "read_file" } }],
+				tools: [
+				{ type: "function", function: { name: "read_file" } },
+				{ type: "function", function: { name: "write_file" } },
+				{ type: "function", function: { name: "mcp--fs--read" } },
+			],
 			})
-			expect(request.tools[0].function.strict).toBeUndefined()
+			expect(request.tools.every((t) => (t as { function?: { strict?: unknown } }).function?.strict === undefined)).toBe(true)
 			expect(request.max_tokens).toBeUndefined()
 			expect(request.temperature).toBeUndefined()
 		})
