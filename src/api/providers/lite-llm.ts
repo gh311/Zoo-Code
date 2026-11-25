@@ -256,7 +256,10 @@ export class LiteLLMHandler extends RouterProvider implements SingleCompletionHa
 			stream_options: {
 				include_usage: true,
 			},
-			tools: this.convertToolsForOpenAI(metadata?.tools),
+			// LiteLLM proxies to strict-unaware endpoints (e.g. AWS Bedrock via
+			// its OpenAI-compatible surface) that reject strict: true tool fields
+			// (#1137), so non-MCP tools are sent with strict: false.
+			tools: this.convertToolsForOpenAI(metadata?.tools, false),
 			tool_choice: metadata?.tool_choice,
 		}
 		if (reasoningEffort) {

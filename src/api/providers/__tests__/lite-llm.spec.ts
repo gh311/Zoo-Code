@@ -2478,4 +2478,46 @@ describe("LiteLLMHandler", () => {
 			expect(handler.getModelCacheScope()).toEqual({ urlScoped: true, keyScoped: true, authScoped: false })
 		})
 	})
+
+	describe("strict tool flag emission", () => {
+		const systemPrompt = "You are helpful"
+		const messages: Anthropic.Messages.MessageParam[] = [{ role: "user", content: "Hello" }]
+
+		const makeTool = (name: string) =>
+			({
+				type: "function",
+				function: {
+					name,
+					description: "Read a file",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" } },
+					},
+				},
+			}) satisfies OpenAI.Chat.ChatCompletionFunctionTool
+
+		beforeEach(() => {
+			mockCreate.mockReturnValue({
+				withResponse: vi.fn().mockResolvedValue({
+					data: asyncStreamFrom([{ choices: [{ delta: { content: "ok" } }] }]),
+				}),
+			})
+		})
+
+		it.each([
+			["a plain tool", makeTool("read_file")],
+			["an MCP tool", makeTool("mcp--server--read_file")],
+		])("sends strict false for %s so strict-unaware routes accept the request", async (_label, tool) => {
+			const stream = handler.createMessage(systemPrompt, messages, { taskId: "test-task", tools: [tool] })
+			await collectStream(stream)
+
+			const request = mockCreate.mock.calls[0][0]
+			expect(request.tools).toHaveLength(1)
+			// LiteLLM routes to strict-unaware endpoints (e.g. AWS Bedrock) that
+			// reject strict: true (issue #1137), so the flag must stay false.
+			expect(request.tools[0].function.strict).toBe(false)
+			// Strict off keeps the declared schema as-is: no required-list rewrite.
+			expect(request.tools[0].function.parameters).toStrictEqual(tool.function.parameters)
+		})
+	})
 })
