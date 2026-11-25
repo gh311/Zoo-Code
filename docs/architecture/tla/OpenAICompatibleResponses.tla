@@ -18,6 +18,14 @@
 \* The source gains configuredTimeout. A request can end in completion, abort, or deadlineFired.
 \* The SDK timeout stays a second guard. TransportDeadline is an oracle over the source.
 \* Threads: issue 1407. The unfixed transport is the NoTransportDeadline sabotage config.
+\* Review 0ef65dac74 ratchet: 1 covered (debug-proxy exclusion), 0 added, 0 gap.
+\* ConfiguredDeadlineOnly does not cover debug-proxy runs. While the debug proxy
+\* is active, createUndiciTimeoutFetch returns undefined and the request rides
+\* the proxy-patched global fetch with no dispatcher, so the platform 300 s
+\* undici default bounds it and a larger configured timeout still ends at 300 s.
+\* The oracle has no proxy input, so its "configured" verdict covers direct
+\* transports only. Normalizing the SDK timeout to the timer cap does not change
+\* this rule: the cap aligns the client timeout with the transport deadline.
 \* Refactor ratchet: 0 covered, 1 added, 0 gap. Derived listener state hid disposal order.
 \* Review e7ed99742a: 0 covered, 9 added, 2 gap (helper duplication and code/model correspondence).
 \* Finding 9's blanket rejection of max was false; supported effort values depend on the model.

@@ -456,6 +456,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		isAzureV1: boolean,
 		headers: Record<string, string>,
 	): OpenAI {
+		// The SDK timeout option reaches a Node timer: round fractions up and cap
+		// at 2^31-1 ms (larger values clamp to a 1 ms abort). 0 stays disabled.
+		const sdkTimeout = hasUsableTimeout(timeout) ? toSdkTimeoutMs(timeout) : timeout
+
 		if (isAzureV1 || (isAzureOpenAi && this.options.openAiUseResponsesApi && !this.options.azureApiVersion)) {
 			const responsesBaseURL = isAzureV1
 				? baseURL
@@ -464,7 +468,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				baseURL: responsesBaseURL,
 				apiKey,
 				defaultHeaders: headers,
-				timeout,
+				timeout: sdkTimeout,
 				fetch: createUndiciTimeoutFetch(timeout),
 			})
 		} else if (isAzureAiInference) {
@@ -473,7 +477,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiKey,
 				defaultHeaders: headers,
 				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
-				timeout,
+				timeout: sdkTimeout,
 				fetch: createUndiciTimeoutFetch(timeout),
 			})
 		} else if (isAzureOpenAi) {
@@ -483,7 +487,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiKey,
 				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
 				defaultHeaders: headers,
-				timeout,
+				timeout: sdkTimeout,
 				fetch: createUndiciTimeoutFetch(timeout),
 			})
 		}
@@ -491,7 +495,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			baseURL,
 			apiKey,
 			defaultHeaders: headers,
-			timeout,
+			timeout: sdkTimeout,
 			fetch: createUndiciTimeoutFetch(timeout),
 		})
 	}

@@ -5,7 +5,7 @@ import { type ModelInfo, openAiModelInfoSaneDefaults } from "@roo-code/types"
 
 import { type ApiHandlerOptions, getModelMaxOutputTokens } from "../../shared/api"
 import { createUndiciTimeoutFetch } from "./utils/transport-timeout"
-import { hasUsableTimeout } from "./utils/abort-signal"
+import { hasUsableTimeout, toSdkTimeoutMs } from "./utils/abort-signal"
 import { TagMatcher } from "../../utils/tag-matcher"
 import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
 import { convertToOpenAiMessages } from "../transform/openai-format"
@@ -69,7 +69,9 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 			baseURL,
 			apiKey: this.options.apiKey,
 			defaultHeaders: DEFAULT_HEADERS,
-			timeout,
+			// The SDK timeout option reaches a Node timer: round fractions up and cap
+			// at 2^31-1 ms (larger values clamp to a 1 ms abort). 0 stays disabled.
+			timeout: hasUsableTimeout(timeout) ? toSdkTimeoutMs(timeout) : timeout,
 			fetch: createUndiciTimeoutFetch(timeout),
 		})
 	}

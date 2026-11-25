@@ -9,6 +9,7 @@ vitest.mock("../utils/timeout-config", () => ({
 }))
 
 import { getApiRequestTimeout } from "../utils/timeout-config"
+import { MAX_TIMEOUT_MS } from "../utils/abort-signal"
 
 import { clearAllMocks } from "../../../test-utils/reset"
 
@@ -248,5 +249,28 @@ describe("OpenAiHandler transport deadline", () => {
 		const config = mockOpenAIConstructor.mock.calls.at(-1)?.[0] as { fetch?: unknown }
 		expect(config?.fetch).toBeUndefined()
 		expect(mockAgentConstructor).not.toHaveBeenCalled()
+	})
+
+	it("caps a per-call timeout override above the maximum timer delay", async () => {
+		vi.mocked(getApiRequestTimeout).mockReturnValue(600000)
+
+		const options: ApiHandlerOptions = {
+			apiModelId: "gpt-4",
+			openAiModelId: "gpt-4",
+			openAiApiKey: "test-api-key",
+		}
+		const handler = new OpenAiHandler(options)
+		mockOpenAIConstructor.mockClear()
+
+		// The mock client returns no response, so the completion itself rejects;
+		// the assertion is on the client the override built.
+		await expect(handler.completePrompt("hi", { timeoutMs: MAX_TIMEOUT_MS + 1 })).rejects.toThrow()
+
+		expect(mockOpenAIConstructor).toHaveBeenCalledTimes(1)
+		expect(mockOpenAIConstructor).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				timeout: MAX_TIMEOUT_MS,
+			}),
+		)
 	})
 })
