@@ -329,4 +329,24 @@ describe("getMcpServerTools", () => {
 
 		expect(result.map((t) => getFunction(t).name)).toStrictEqual(["mcp--server--tool"])
 	})
+
+	it("reuses the suffixed segment for a repeated colliding original (thread 4683306127)", () => {
+		// Mixed repeat: the dotted tool owns the base segment, so the
+		// underscored original moves to a suffixed segment; its second
+		// occurrence must reuse that same segment instead of allocating
+		// another one, and the duplicate definition must collapse.
+		const server = createMockServer("server", [
+			createMockTool("System.readFile"),
+			createMockTool("System_readFile"),
+			createMockTool("System_readFile"),
+		])
+		const mockHub = createMockMcpHub([server])
+
+		const result = getMcpServerTools(mockHub as McpHub)
+
+		expect(result.map((t) => getFunction(t).name)).toStrictEqual([
+			"mcp--server--System_readFile",
+			"mcp--server--System_readFile_2",
+		])
+	})
 })

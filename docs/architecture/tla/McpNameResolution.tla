@@ -22,6 +22,10 @@
 \* 4680575748 (GeneratedNameStaysBound, ExactNameOwnServer; NoBinding isolates
 \* the reclaim) and for thread 4680575773 (DistinctToolSegments and
 \* ToolAliasResolvesToOriginal; NoToolSuffix and NoToolBind isolate them).
+\* Round 3: 0 covered, 2 added, gaps below. Thread 4683306103: the fuzzy
+\* fallback now reads the modeled order (toolOrder[1]) in both SelectedTool
+\* and ExpectedTool, so ExactToolFirst is order-sensitive and NoExactFirst
+\* still violates it. Thread 4683306127: see Gaps.
 \* Gaps: thread 4680575764 is a test-double policy for the spec files' unit
 \* tests, not a model failure. The McpHub.ts:1495 finding (a suffixed alias
 \* arrives with hyphens turned into underscores) needs string surgery that
@@ -29,7 +33,12 @@
 \* (mcp_server.ts:43 Minor) is arithmetic on lengths; the binding covers a
 \* shortened name symbolically, but the length rule stays in unit tests.
 \* ToolRouter discovery keeps the first tool per colliding name (pre-existing
-\* behavior); re-registration and delete are code-level idempotency.
+\* behavior); re-registration and delete are code-level idempotency. Thread
+\* 4683306127 (a repeated original whose base is owned by another tool
+\* allocated a fresh suffix per occurrence) is code-level allocation state:
+\* ToolSegment is already keyed by the original name, so the spec cannot
+\* express per-occurrence allocation without modeling list positions; the
+\* mixed-repeat unit test covers it in mcp_server.spec.ts.
 \* Result: the fixed gate passes on 36 states. Unfixed, NoReclaim, and NoSuffix
 \* violate DistinctServerAliases, and the same three break
 \* GeneratedNameStaysBound: their colliding aliases make the generation
@@ -158,9 +167,12 @@ ToolAliasResolvesToOriginal ==
         (\A i \in 1..2 : DispatchedTool(i) = toolOrder[i])
 
 \* The exact requested name wins when it exists on the server; a mangled name
-\* falls back to the first fuzzy match in the list order modeled here.
-SelectedTool(r) == IF ExactFirst /\ r \in Tools THEN r ELSE "System.readFile"
-ExpectedTool(r) == IF r \in Tools THEN r ELSE "System.readFile"
+\* falls back to the first fuzzy match in the modeled list order (thread
+\* 4683306103). A fixed-string fallback made ExactToolFirst pass vacuously
+\* for the order that lists the underscored tool first, because both
+\* operators returned the same constant instead of the modeled order.
+SelectedTool(r) == IF ExactFirst /\ r \in Tools THEN r ELSE toolOrder[1]
+ExpectedTool(r) == IF r \in Tools THEN r ELSE toolOrder[1]
 ExactToolFirst == SelectedTool(toolCall) = ExpectedTool(toolCall)
 
 Init == order \in Orders /\ toolCall \in ToolRequests /\ toolOrder \in ToolOrders

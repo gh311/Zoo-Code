@@ -39,9 +39,13 @@ export function getMcpServerTools(mcpHub?: McpHub, allowedServers?: string[]): O
 		}
 		// Generated segments already assigned for this server, mapped to the
 		// original tool name that owns them. A repeat of the same original
-		// name reuses its segment; a distinct original that sanitizes to a
-		// taken segment moves to a suffixed segment.
+		// name reuses its assigned segment; a distinct original that
+		// sanitizes to a taken segment moves to a suffixed segment.
 		const segmentOwners = new Map<string, string>()
+		// Reverse map: original tool name -> segment already assigned to it.
+		// Without it, a repeated original whose base is owned by another
+		// tool allocated a fresh suffix on every occurrence (thread 4683306127).
+		const segmentByOriginal = new Map<string, string>()
 		for (const tool of server.tools) {
 			// Filter tools where tool.enabledForPrompt is not explicitly false
 			if (tool.enabledForPrompt === false) {
@@ -49,12 +53,15 @@ export function getMcpServerTools(mcpHub?: McpHub, allowedServers?: string[]): O
 			}
 
 			const baseSegment = sanitizeMcpName(tool.name)
+			const assignedSegment = segmentByOriginal.get(tool.name)
 			const segmentOwner = segmentOwners.get(baseSegment)
 			const toolSegment =
-				segmentOwner !== undefined && segmentOwner !== tool.name
+				assignedSegment ??
+				(segmentOwner !== undefined && segmentOwner !== tool.name
 					? nextServerAlias(tool.name, new Set(segmentOwners.keys()))
-					: baseSegment
+					: baseSegment)
 			segmentOwners.set(toolSegment, tool.name)
+			segmentByOriginal.set(tool.name, toolSegment)
 
 			// Build the tool name from the hub-assigned server alias so two
 			// servers whose sanitized names collide (e.g. "svc.prod" and
