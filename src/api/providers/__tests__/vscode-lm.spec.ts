@@ -5464,6 +5464,30 @@ describe("leaked tool-call recovery", () => {
 			expect(leftoverText).toBe(text)
 		})
 
+		it("does not let a later fence close a carried span around an invoke", () => {
+			// CommonMark: block structure takes precedence over inline
+			// spans. The unmatched single-backtick opener before the block
+			// must not reach the fenced content after it, or the genuine
+			// invoke stays text instead of becoming a call.
+			const block = invoke("update_todo_list", param("todos", "[x] one"))
+			const text = "`unfinished\nBerlin\n\n" + block + "\n\n~~~text\n`sample`\n~~~\n"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, tools, "", true)
+
+			expect(calls).toEqual([{ name: "update_todo_list", input: { todos: "[x] one" } }])
+			expect(leftoverText).not.toContain(block)
+		})
+
+		it("still suppresses an invoke when the carried span closes in later prose", () => {
+			const block = invoke("update_todo_list", param("todos", "[x] one"))
+			const text = "`example\n" + block + "\nthe opener above closes right ` here"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, tools, "", true)
+
+			expect(calls).toHaveLength(0)
+			expect(leftoverText).toBe(text)
+		})
+
 		it("suppresses an invoke inside a code span split across chunks", () => {
 			const preceding = "`example\n"
 			const text = invoke("update_todo_list", param("todos", "x")) + "\n`"

@@ -40,11 +40,17 @@
 \* Review: 0 covered, 3 added, 0 gap. Review r2 (4692726968 + 4692726987):
 \* 0 covered, 2 added (run-6 truth FALSE; EndChunk leaks only when the
 \* released region holds a complete-block token), 0 gap. Review r3 on
-\* 7a31fb8c (4695293896 + 4695293918 + 4695293931): 1 covered (4695293931:
-\* the backtick-pair rule has no line reset here; the code now carries the
-\* span width across lines to match), 0 added, 2 gap (4695293896 +
-\* 4695293918: native tool-call arrival and segment emission are outside
-\* this model's abstraction; ordering is pinned by direct unit tests).
+\* 7a31fb8c (4695293896 + 4695293918 + 4695293931): 0 covered, 0 added,
+\* 3 gap. 4695293931: qTicks toggles on every bt token and the model has
+\* no line or run-width state, so it cannot tell a same-width closer on a
+\* later line from an unmatched span; r6 corrected the record from
+\* covered. 4695293896 + 4695293918: native tool-call arrival and segment
+\* emission are outside this model's abstraction; ordering is pinned by
+\* direct unit tests. Review r6 on 04e9201cd (4696330196 + 4696330215):
+\* 0 covered, 0 added, 2 gap. 4696330196 is the r3 record correction.
+\* 4696330215: the fence-boundary stop in the closer search reads the
+\* text after the block, which the model never advances into; pinned by
+\* direct unit tests.
 EXTENDS Naturals, Sequences
 
 CONSTANTS RecoverTextCalls, HoldAcrossChunks, GuardQuotedMention, SuppressBlockText,

@@ -341,6 +341,30 @@ function hasQuotingCue(sameLineBefore: string): boolean {
 }
 
 /**
+ * True when a backtick run of exactly `carried` width closes a span opened
+ * before the block, searching the text after it. The search walks prose lines
+ * only: it stops at the first fenced-block marker line, because block
+ * structure takes precedence over inline spans - a fence ends the prose
+ * region, and fence lines plus their content are fence syntax, never
+ * code-span delimiters. The partial line the block ends on is always prose:
+ * a fence marker can only open at a line start.
+ */
+function closesCarriedCodeSpan(rest: string, carried: number): boolean {
+	const lines = rest.split("\n")
+	for (const [index, line] of lines.entries()) {
+		if (index > 0 && /^ {0,3}(?:`{3,}|~{3,})/.test(line)) {
+			return false
+		}
+		for (const run of line.matchAll(/`+/g)) {
+			if (run[0].length === carried) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+/**
  * True when the block ending at `endIndex` is being quoted — inside a fenced code block, inside an
  * inline code span, or embedded mid-sentence in plain prose — rather than invoked.
  *
@@ -354,12 +378,11 @@ function isQuotedAsCode(text: string, endIndex: number, scan: QuotingScanState):
 	if (carried > 0) {
 		// CommonMark code spans can span lines. The carried span
 		// quotes this block only when a same-width run closes it
-		// later; an unterminated opener stays line-bounded, so a
-		// leaked span never hides real calls.
-		for (const run of text.slice(endIndex).matchAll(/`+/g)) {
-			if (run[0].length === carried) {
-				return true
-			}
+		// later in the same prose region (a fence ends the region);
+		// an unterminated opener stays line-bounded, so a leaked
+		// span never hides real calls.
+		if (closesCarriedCodeSpan(text.slice(endIndex), carried)) {
+			return true
 		}
 	}
 	// Narrative words after the block on the same line mean the markup is being talked about
