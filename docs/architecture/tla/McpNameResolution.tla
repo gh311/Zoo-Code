@@ -9,12 +9,15 @@
 \* original tool names that sanitize alike lose one tool.
 \* Invariants: DistinctServerAliases, AliasResolvesToOriginal, SafeNameKeepsOwn,
 \* ExactToolFirst, GeneratedNameStaysBound, ExactNameOwnServer,
-\* DistinctToolSegments, and ToolAliasResolvesToOriginal.
+\* DistinctToolSegments, ToolAliasResolvesToOriginal,
+\* RequestBindingSurvivesRebuild, and DeletedServerDoesNotCaptureCall.
 \* Expected: every registration order assigns pairwise-distinct aliases, each
 \* alias resolves back to its server, a safe name keeps itself, an exact
 \* tool name wins before any fuzzy match, a generated name reaches the server
-\* that issued it across a later alias reclaim, and colliding tool names keep
-\* distinct segments that each run their own original tool.
+\* that issued it across a later alias reclaim, colliding tool names keep
+\* distinct segments that each run their own original tool, and an in-flight
+\* request keeps its generation-time binding across a second build and a
+\* delete of its issuing server.
 \* Vendor facts are inputs. This model does not verify transport code, provider
 \* function-name rules, or 64-character truncation.
 \* Review: round 1: 0 covered, 2 added (threads 4675461229 and 4675461220).
@@ -26,6 +29,12 @@
 \* fallback now reads the modeled order (toolOrder[1]) in both SelectedTool
 \* and ExpectedTool, so ExactToolFirst is order-sensitive and NoExactFirst
 \* still violates it. Thread 4683306127: see Gaps.
+\* Round 4: 0 covered, 2 added, gaps below. Thread 4683206615 (last bot
+\* reply on 4675461229): a second tool build after later registrations
+\* rewrites the shared binding, and deleteConnection removes the issuing
+\* server's entries. Dispatch consults the request's frozen binding
+\* (RequestBindingSurvivesRebuild, DeletedServerDoesNotCaptureCall);
+\* NoSnapshot isolates both sequences and violates only these two.
 \* Gaps: thread 4680575764 is a test-double policy for the spec files' unit
 \* tests, not a model failure. The McpHub.ts:1495 finding (a suffixed alias
 \* arrives with hyphens turned into underscores) needs string surgery that
@@ -33,7 +42,8 @@
 \* (mcp_server.ts:43 Minor) is arithmetic on lengths; the binding covers a
 \* shortened name symbolically, but the length rule stays in unit tests.
 \* ToolRouter discovery keeps the first tool per colliding name (pre-existing
-\* behavior); re-registration and delete are code-level idempotency. Thread
+\* behavior); tool-level re-registration stays code-level idempotency (the
+\* server-level delete is modeled in round 4). Thread
 \* 4683306127 (a repeated original whose base is owned by another tool
 \* allocated a fresh suffix per occurrence) is code-level allocation state:
 \* ToolSegment is already keyed by the original name, so the spec cannot
@@ -45,11 +55,15 @@
 \* binding ambiguous. Unfixed also breaks AliasResolvesToOriginal (round 1).
 \* NoExactFirst violates only ExactToolFirst; NoBinding only
 \* GeneratedNameStaysBound; NoToolBind only ToolAliasResolvesToOriginal;
-\* NoToolSuffix only DistinctToolSegments. No new defect beyond the findings.
+\* NoToolSuffix only DistinctToolSegments. NoSnapshot violates only
+\* RequestBindingSurvivesRebuild and DeletedServerDoesNotCaptureCall; every
+\* prior sabotage cfg still fails exactly its own invariants because the
+\* round-4 consult reads the frozen request binding there. No new defect
+\* beyond the findings.
 \* Cost: about 40 minutes (round 1) plus about 50 minutes of agent work
 \* across spec, tests, and fix (round 2).
 EXTENDS TLC, Naturals
-CONSTANT Fixed, Reclaim, Suffix, ExactFirst, Binding, ToolBind, ToolSuffix
+CONSTANT Fixed, Reclaim, Suffix, ExactFirst, Binding, ToolBind, ToolSuffix, Snapshot
 VARIABLE order, toolCall, toolOrder
 
 Positions == 1..3
@@ -128,6 +142,43 @@ SafeNameKeepsOwn == \A p \in Positions : IsSafe(order[p]) => Final[p] = order[p]
 \* 4680575748 on PR 2669). The NoBinding trace shows the wrong server pick.
 GeneratedNameStaysBound ==
     \A g \in 1..3 : \A p \in 1..g : DispatchTarget(AMap[g][p], g) = order[p]
+
+\* The owner of alias a in alias map m, or "unbound" when no server in m
+\* holds that alias.
+OwnerAt(m, a) ==
+    LET qs == {q \in Positions : m[q] = a}
+    IN IF qs = {} THEN "unbound" ELSE order[CHOOSE q \in qs : TRUE]
+
+\* What the shared binding map answers for the name that request (g, p)
+\* advertised, after a second tool build followed all three registrations
+\* (thread 4683206615). A name whose alias another server now owns is
+\* re-bound to that server; a name that no server regenerates keeps the
+\* entry from its own build.
+SharedAfterRebuild(g, p) ==
+    LET owner == OwnerAt(AMap[3], AMap[g][p])
+    IN IF owner = "unbound" THEN order[p] ELSE owner
+
+\* Dispatch of the in-flight request (g, p) when the second build rewrote
+\* the shared map. The fixed consult answers the request's frozen binding;
+\* the buggy consult (NoSnapshot) answers the shared map, so a call made
+\* under a reclaimed alias reaches the reclaiming server.
+RebuildOutcome(g, p) ==
+    IF Snapshot THEN order[p] ELSE SharedAfterRebuild(g, p)
+
+RequestBindingSurvivesRebuild ==
+    \A g \in 1..3 : \A p \in 1..g : RebuildOutcome(g, p) = order[p]
+
+\* Dispatch when deleteConnection removed the issuing server before the
+\* response arrived. The fixed consult still answers the frozen binding, so
+\* the call targets the deleted server and the executor rejects it cleanly.
+\* The buggy consult finds no entry and falls back to live alias resolution;
+\* that may reach a different server, while an unresolved fallback is a
+\* clean rejection.
+DeleteOutcome(g, p) ==
+    IF Snapshot THEN order[p] ELSE ResolveBySanitized(AMap[g][p])
+
+DeletedServerDoesNotCaptureCall ==
+    \A g \in 1..3 : \A p \in 1..g : DeleteOutcome(g, p) \in {order[p], "unresolved"}
 
 \* Exact-name resolution answers with the server whose original name it is.
 \* It holds in every config: the exact branch runs before the registry, and
