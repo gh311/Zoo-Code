@@ -326,7 +326,10 @@ async function getFileOrFolderContentWithMetadata(
 					content: `[read_file for '${mentionPath}']\nNote: Binary file omitted from context.`,
 				}
 			}
-			if (rooIgnoreController && !rooIgnoreController.validateAccess(unescapedPath)) {
+			// Validate the resolved file (the one that will actually be
+			// read) so root-anchored .rooignore rules cover
+			// fallback-resolved reads (PR #2681 thread 4689348741).
+			if (rooIgnoreController && !rooIgnoreController.validateAccess(absPath)) {
 				return {
 					type: "file",
 					path: mentionPath,
@@ -336,9 +339,17 @@ async function getFileOrFolderContentWithMetadata(
 			try {
 				const result = await extractTextFromFileWithMetadata(absPath)
 
-				// Track file context
+				// Track the identity that supplied the content: the
+				// relative mention path when the cwd-relative attempt
+				// resolved it, the resolved absolute path when the
+				// absolute fallback read outside the cwd — the
+				// tracker re-resolves relative values against the
+				// workspace cwd, which would watch the wrong file
+				// (PR #2681 thread 4689348741).
 				if (fileContextTracker) {
-					await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
+					const cwdResolved = path.resolve(cwd, unescapedPath)
+					const trackedPath = absPath === cwdResolved ? mentionPath : absPath
+					await fileContextTracker.trackFileContext(trackedPath, "file_mentioned")
 				}
 
 				return {

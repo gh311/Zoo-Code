@@ -5,6 +5,8 @@ import { tmpdir } from "os"
 import path from "path"
 
 import { parseMentions, openMention } from "../index"
+import type { FileContextTracker } from "../../context-tracking/FileContextTracker"
+import { RooIgnoreController } from "../../ignore/RooIgnoreController"
 import { openFile } from "../../../integrations/misc/open-file"
 
 // Mock vscode
@@ -21,6 +23,18 @@ vi.mock("vscode", () => ({
 	env: {
 		openExternal: vi.fn(),
 	},
+	RelativePattern: function (this: { base: string; pattern: string }, base: string, pattern: string) {
+		this.base = base
+		this.pattern = pattern
+	},
+	workspace: {
+		createFileSystemWatcher: vi.fn(() => ({
+			onDidChange: vi.fn(() => ({ dispose: vi.fn() })),
+			onDidCreate: vi.fn(() => ({ dispose: vi.fn() })),
+			onDidDelete: vi.fn(() => ({ dispose: vi.fn() })),
+			dispose: vi.fn(),
+		})),
+	},
 }))
 
 // Mock i18n
@@ -35,6 +49,17 @@ vi.mock("../../../integrations/misc/open-file", () => ({
 }))
 
 const makeDir = async (prefix: string): Promise<string> => mkdtemp(path.join(tmpdir(), prefix))
+
+// The webview emits an opened-tab mention as a single-slash,
+// forward-slash value (openedFileMentionValue in
+// webview-ui/src/utils/context-mentions.ts). mentionRegex needs a '/'
+// or scheme:// after '@' and stops at unescaped backslashes, so a
+// platform-native path.join value cannot serve as the mention input on
+// Windows (PR #2681 thread 4689348729).
+const mentionValueFor = (absPath: string): string => {
+	const posix = absPath.split(path.sep).join("/")
+	return posix.startsWith("/") ? posix : `/${posix}`
+}
 
 describe("parseMentions - URL mention handling", () => {
 	beforeEach(() => {
@@ -63,7 +88,7 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 		const absFile = path.join(outsideDir, "notes.txt")
 		await writeFile(absFile, "absolute tab content\n")
 		try {
-			const result = await parseMentions(`@${absFile}`, taskCwd)
+			const result = await parseMentions(`@${mentionValueFor(absFile)}`, taskCwd)
 			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
 
 			expect(fileBlock).toBeTruthy()
@@ -91,6 +116,31 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 			expect(fileBlock!.content).toContain("workspace version")
 		} finally {
 			await rm(ws, { recursive: true, force: true })
+		}
+	})
+
+	it("denies a fallback-resolved mention when a root-anchored .rooignore rule covers the file", async () => {
+		// cwd = workDir with rule '/secret.txt'; the secret lives at
+		// workDir/secret.txt and the tab mentions it absolutely, so the
+		// cwd-relative shadow does not exist and the resolver falls back
+		// to the raw absolute tab path. validateAccess must check that
+		// resolved path — the relative mention value would resolve to
+		// workDir/…/secret.txt and never match the root-anchored rule.
+		const workDir = await makeDir("roo-ignore-cwd-")
+		const secret = path.join(workDir, "secret.txt")
+		await writeFile(secret, "must not reach the context\n")
+		await writeFile(path.join(workDir, ".rooignore"), "/secret.txt\n")
+		const controller = new RooIgnoreController(workDir)
+		await controller.initialize()
+		try {
+			const result = await parseMentions(`@${mentionValueFor(secret)}`, workDir, undefined, controller)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.content).toContain("Note: File is ignored by .rooignore.")
+			expect(fileBlock!.content).not.toContain("must not reach the context")
+		} finally {
+			await rm(workDir, { recursive: true, force: true })
 		}
 	})
 
@@ -122,7 +172,7 @@ describe("openMention - absolute fallback (#1271)", () => {
 		const absFile = path.join(outsideDir, "notes.txt")
 		await writeFile(absFile, "x\n")
 		try {
-			await openMention(taskCwd, absFile)
+			await openMention(taskCwd, mentionValueFor(absFile))
 
 			expect(openFile).toHaveBeenCalledWith(absFile)
 		} finally {
@@ -142,6 +192,47 @@ describe("openMention - absolute fallback (#1271)", () => {
 			await openMention(ws, "/src/file.ts")
 
 			expect(openFile).toHaveBeenCalledWith(relFile)
+		} finally {
+			await rm(ws, { recursive: true, force: true })
+		}
+	})
+})
+
+describe("parseMentions - file context tracking identity (#1271)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("tracks the resolved absolute path when the mention resolves through the absolute fallback", async () => {
+		const taskCwd = await makeDir("track-cwd-")
+		const outsideDir = await makeDir("track-outside-")
+		const absFile = path.join(outsideDir, "notes.txt")
+		await writeFile(absFile, "tracked tab content\n")
+		const tracker = { trackFileContext: vi.fn() } as unknown as FileContextTracker
+		try {
+			await parseMentions(`@${mentionValueFor(absFile)}`, taskCwd, tracker)
+
+			// FileContextTracker re-resolves relative values against the
+			// workspace cwd, so the fallback read must be tracked by its
+			// resolved absolute identity, not the relative mention value.
+			expect(tracker.trackFileContext).toHaveBeenCalledWith(absFile, "file_mentioned")
+		} finally {
+			await Promise.all([
+				rm(taskCwd, { recursive: true, force: true }),
+				rm(outsideDir, { recursive: true, force: true }),
+			])
+		}
+	})
+
+	it("keeps the relative mention path for ordinary workspace files", async () => {
+		const ws = await makeDir("track-ws-")
+		await mkdir(path.join(ws, "src"))
+		await writeFile(path.join(ws, "src", "file.ts"), "workspace version\n")
+		const tracker = { trackFileContext: vi.fn() } as unknown as FileContextTracker
+		try {
+			await parseMentions("@/src/file.ts", ws, tracker)
+
+			expect(tracker.trackFileContext).toHaveBeenCalledWith("src/file.ts", "file_mentioned")
 		} finally {
 			await rm(ws, { recursive: true, force: true })
 		}
