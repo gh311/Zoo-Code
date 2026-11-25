@@ -18,7 +18,7 @@
 \* in lite-llm.spec.ts shows the same emission before the fix.
 \* Result: Fixed holds in 4 states. Unfixed fails EmitsStrictIffAccepted.
 \* No new failure was found.
-\* Review: 0 covered, 0 added, 0 gap. PR to come. No earlier subsystem spec
+\* Review: 0 covered, 0 added, 0 gap. PR 2688. No earlier subsystem spec
 \* exists. Schema content is outside this model. StrictToolSchema (PR 2653)
 \* owns it. This spec owns only the strict flag at the call site.
 \* Not modeled: HTTP transport, model choice, and the MCP server schema.
