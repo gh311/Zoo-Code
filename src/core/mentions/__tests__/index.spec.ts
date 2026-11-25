@@ -59,7 +59,7 @@ const makeDir = async (prefix: string): Promise<string> => mkdtemp(path.join(tmp
 const mentionValueFor = (absPath: string): string => {
 	const posix = absPath.split(path.sep).join("/")
 	const trimmed = posix.replace(/^\/+/, "")
-	return `//${trimmed}`
+	return posix.startsWith("/") ? `//${trimmed}` : `/${trimmed}`
 }
 
 describe("parseMentions - URL mention handling", () => {

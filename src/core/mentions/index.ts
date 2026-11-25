@@ -352,7 +352,7 @@ async function getFileOrFolderContentWithMetadata(
 				// later read of the mention value targets the wrong file
 				// (PR #2681 thread 4690050706).
 				const cwdResolved = path.resolve(cwd, unescapedPath)
-				const servedPath = absPath === cwdResolved ? mentionPath : absPath
+				const servedPath = absPath === cwdResolved ? unescapedPath : absPath
 				if (fileContextTracker) {
 					await fileContextTracker.trackFileContext(servedPath, "file_mentioned")
 				}
