@@ -387,6 +387,13 @@ async function getFileOrFolderContentWithMetadata(
 											formatFileReadResult(filePath.toPosix(), {
 												...result,
 												content: truncatedLines,
+												// The clip always starts at line 1, so report the
+												// shown range explicitly — otherwise a notebook
+												// (extractor reports wasTruncated: false) would be
+												// silently clipped with no truncation notice.
+												returnedLines: MAX_FOLDER_TOTAL_LINES,
+												wasTruncated: true,
+												linesShown: [1, MAX_FOLDER_TOTAL_LINES],
 											}),
 										)
 										inlinedFileCount++

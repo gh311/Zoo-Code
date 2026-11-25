@@ -28,9 +28,18 @@ const FILE_CONTENTS: Map<string, string> = ((globalThis as Record<string, unknow
 >()) as Map<string, string>
 
 vi.mock("../../../integrations/misc/extract-text", () => ({
-	extractTextFromFileWithMetadata: vi.fn(async (absoluteFilePath: string) => ({
-		content: FILE_CONTENTS.get(absoluteFilePath) ?? "",
-	})),
+	extractTextFromFileWithMetadata: vi.fn(async (absoluteFilePath: string) => {
+		const content = FILE_CONTENTS.get(absoluteFilePath) ?? ""
+		// Mirror the real extractor's metadata for a non-truncated file so the
+		// truncation metadata the budget clipping path overlays is exercised.
+		const lines = content.split("\n")
+		return {
+			content,
+			totalLines: lines.length,
+			returnedLines: lines.length,
+			wasTruncated: false,
+		}
+	}),
 }))
 
 const makeLines = (n: number): string => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")
@@ -45,6 +54,17 @@ async function makeTempFolder(fileNames: string[], contentFor: (name: string) =>
 		}),
 	)
 	return dir
+}
+
+// Full inlined-file header list: every "[read_file for '<path>']" entry in the
+// order the folder was walked.
+const inlinedHeaders = (content: string): string[] =>
+	Array.from(content.matchAll(/\[read_file for '(.+?)'\]/g), (m) => m[1])
+
+// The complete skipped-file list from the folder truncation note.
+const skippedList = (content: string): string[] => {
+	const match = content.match(/Skipped: (.+)/)
+	return match ? match[1].split(", ") : []
 }
 
 describe("parseMentions - URL mention handling", () => {
@@ -75,15 +95,15 @@ describe("parseMentions - folder mention inline budget (#1539)", () => {
 
 			expect(folderBlock).toBeTruthy()
 			const content = folderBlock!.content
-			// exactly the budget's worth of files inlined
-			expect(content.match(/\[read_file for '/g)?.length).toBe(MAX_FOLDER_FILES_INLINED)
+			// exactly the budget's worth of files inlined, in walk order
+			expect(inlinedHeaders(content)).toEqual(
+				names.slice(0, MAX_FOLDER_FILES_INLINED).map((name) => `${path.basename(dir)}/${name}`),
+			)
 			expect(content).toContain("IMPORTANT: Folder content truncated")
 			expect(content).toContain(`Inlined ${MAX_FOLDER_FILES_INLINED} file(s)`)
-			// the 5 overflow files are named in the skip list
-			const skippedNames = names.slice(MAX_FOLDER_FILES_INLINED)
-			for (const name of skippedNames) {
-				expect(content).toContain(name)
-			}
+			// the 5 overflow files are named in the skip list — the FULL list,
+			// not just per-name presence
+			expect(skippedList(content)).toEqual(names.slice(MAX_FOLDER_FILES_INLINED))
 			// and the model is told how to recover them
 			expect(content).toContain("use read_file")
 		} finally {
@@ -101,9 +121,9 @@ describe("parseMentions - folder mention inline budget (#1539)", () => {
 			const folderBlock = result.contentBlocks.find((b) => b.type === "folder")
 			const content = folderBlock!.content
 
-			expect(content.match(/\[read_file for '/g)?.length).toBe(4)
+			expect(inlinedHeaders(content)).toEqual(names.slice(0, 4).map((name) => `${path.basename(dir)}/${name}`))
 			expect(content).toContain("Inlined 4 file(s) (~4000 lines)")
-			expect(content).toContain("Skipped: big4.txt, big5.txt")
+			expect(skippedList(content)).toEqual(["big4.txt", "big5.txt"])
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}
@@ -111,14 +131,20 @@ describe("parseMentions - folder mention inline budget (#1539)", () => {
 
 	it("a single oversized file is inlined truncated to the budget, never dropped", async () => {
 		const names = ["huge.txt"]
-		const dir = await makeTempFolder(names, () => makeLines(MAX_FOLDER_TOTAL_LINES + 500))
+		const totalLines = MAX_FOLDER_TOTAL_LINES + 500
+		const dir = await makeTempFolder(names, () => makeLines(totalLines))
 		try {
 			const result = await parseMentions(`@/${path.basename(dir)}`, tmpdir())
 			const folderBlock = result.contentBlocks.find((b) => b.type === "folder")
 			const content = folderBlock!.content
 
 			// inlined (not skipped), but bounded to the budget
+			expect(inlinedHeaders(content)).toEqual([`${path.basename(dir)}/huge.txt`])
+			expect(skippedList(content)).toEqual([])
 			expect(content).not.toContain("were NOT inlined")
+			// the per-file truncation notice matches the clipped range
+			expect(content).toContain(`Showing lines 1-${MAX_FOLDER_TOTAL_LINES} of ${totalLines} total lines`)
+			expect(content).toContain(`offset=${MAX_FOLDER_TOTAL_LINES + 1}`)
 			const body = content.split("File: ")[1]
 			const bodyLines = body.split("\n").length
 			expect(bodyLines).toBeLessThanOrEqual(MAX_FOLDER_TOTAL_LINES + 2)
@@ -136,6 +162,8 @@ describe("parseMentions - folder mention inline budget (#1539)", () => {
 			const folderBlock = result.contentBlocks.find((b) => b.type === "folder")
 			const content = folderBlock!.content
 
+			expect(inlinedHeaders(content)).toEqual(names.map((name) => `${path.basename(dir)}/${name}`))
+			expect(skippedList(content)).toEqual([])
 			expect(content).not.toContain("IMPORTANT: Folder content truncated")
 			expect(content).toContain("small content of a.txt")
 			expect(content).toContain("small content of c.txt")
