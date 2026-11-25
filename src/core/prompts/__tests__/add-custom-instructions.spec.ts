@@ -39,6 +39,15 @@ vi.mock("os-name", () => ({
 
 vi.mock("fs/promises")
 
+// The RULES section gates the "explore the Desktop" example on the Desktop
+// directory existing (issue #1271). Control the gate without touching the
+// real fs; the real module is kept for the String.prototype.toPosix patch.
+const desktopExists = vi.hoisted(() => ({ value: true }))
+vi.mock("../../../utils/path", async (importOriginal) => {
+	const actual = (await importOriginal()) as typeof import("../../../utils/path")
+	return { ...actual, desktopDirectoryExists: () => desktopExists.value }
+})
+
 import * as vscode from "vscode"
 
 import { SYSTEM_PROMPT } from "../system"

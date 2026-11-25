@@ -104,6 +104,74 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 		}
 	})
 
+	it("returns the resolved absolute path in the mention block for a fallback read", async () => {
+		// Thread 4690050706: the returned path and the read_file header
+		// must name the file that supplied the content, or a later read
+		// of the mention value targets the wrong file under the cwd.
+		const taskCwd = await makeDir("serve-cwd-")
+		const outsideDir = await makeDir("serve-outside-")
+		const absFile = path.join(outsideDir, "notes.txt")
+		await writeFile(absFile, "served tab content\n")
+		try {
+			const result = await parseMentions(`@${mentionValueFor(absFile)}`, taskCwd)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.path).toBe(absFile)
+			expect(fileBlock!.content).toContain(`[read_file for '${absFile}']`)
+		} finally {
+			await Promise.all([
+				rm(taskCwd, { recursive: true, force: true }),
+				rm(outsideDir, { recursive: true, force: true }),
+			])
+		}
+	})
+
+	it("keeps the relative mention path in the block for a cwd-relative workspace read", async () => {
+		const ws = await makeDir("serve-ws-")
+		await mkdir(path.join(ws, "src"))
+		await writeFile(path.join(ws, "src", "file.ts"), "workspace version\n")
+		try {
+			const result = await parseMentions("@/src/file.ts", ws)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.path).toBe("src/file.ts")
+			expect(fileBlock!.content).toContain("[read_file for 'src/file.ts']")
+		} finally {
+			await rm(ws, { recursive: true, force: true })
+		}
+	})
+
+	it("resolves the tab's absolute file even when a cwd-relative shadow exists", async () => {
+		// Thread 4685318951: the tab mention is root-anchored, so the
+		// open tab's file must win over a same-tailed file under the
+		// task cwd. A cwd-relative resolver reads the shadow instead.
+		const taskCwd = await makeDir("shadow-cwd-")
+		const outsideDir = await makeDir("shadow-outside-")
+		const absFile = path.join(outsideDir, "notes.txt")
+		await writeFile(absFile, "absolute tab content\n")
+		// The shadow: taskCwd/<the stripped absolute tail> — the path the
+		// cwd-relative attempt would resolve the stripped mention to.
+		const shadowRel = absFile.split(path.sep).slice(1).join(path.sep)
+		await mkdir(path.dirname(path.join(taskCwd, shadowRel)), { recursive: true })
+		await writeFile(path.join(taskCwd, shadowRel), "shadow content\n")
+		try {
+			const result = await parseMentions(`@${mentionValueFor(absFile)}`, taskCwd)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.content).toContain("absolute tab content")
+			expect(fileBlock!.content).not.toContain("shadow content")
+			expect(fileBlock!.path).toBe(absFile)
+		} finally {
+			await Promise.all([
+				rm(taskCwd, { recursive: true, force: true }),
+				rm(outsideDir, { recursive: true, force: true }),
+			])
+		}
+	})
+
 	it("keeps '@/src/file.ts' cwd-relative when the workspace file exists", async () => {
 		const ws = await makeDir("mentions-ws-")
 		await mkdir(path.join(ws, "src"))
@@ -183,6 +251,29 @@ describe("openMention - absolute fallback (#1271)", () => {
 		}
 	})
 
+	it("opens the tab's absolute file even when a cwd-relative shadow exists", async () => {
+		// Thread 4685318951: the same priority as the parse path — the
+		// root-anchored tab mention opens the tab's file, not the
+		// same-tailed shadow under the task cwd.
+		const taskCwd = await makeDir("open-shadow-cwd-")
+		const outsideDir = await makeDir("open-shadow-outside-")
+		const absFile = path.join(outsideDir, "notes.txt")
+		await writeFile(absFile, "x\n")
+		const shadowRel = absFile.split(path.sep).slice(1).join(path.sep)
+		await mkdir(path.dirname(path.join(taskCwd, shadowRel)), { recursive: true })
+		await writeFile(path.join(taskCwd, shadowRel), "shadow\n")
+		try {
+			await openMention(taskCwd, mentionValueFor(absFile))
+
+			expect(openFile).toHaveBeenCalledWith(absFile)
+		} finally {
+			await Promise.all([
+				rm(taskCwd, { recursive: true, force: true }),
+				rm(outsideDir, { recursive: true, force: true }),
+			])
+		}
+	})
+
 	it("opens the cwd-relative file when it exists (workspace contract)", async () => {
 		const ws = await makeDir("open-ws-")
 		await mkdir(path.join(ws, "src"))
@@ -208,7 +299,10 @@ describe("parseMentions - file context tracking identity (#1271)", () => {
 		const outsideDir = await makeDir("track-outside-")
 		const absFile = path.join(outsideDir, "notes.txt")
 		await writeFile(absFile, "tracked tab content\n")
-		const tracker = { trackFileContext: vi.fn() } as unknown as FileContextTracker
+		const tracker = { trackFileContext: vi.fn(async () => {}) } satisfies Pick<
+			FileContextTracker,
+			"trackFileContext"
+		>
 		try {
 			await parseMentions(`@${mentionValueFor(absFile)}`, taskCwd, tracker)
 
@@ -228,7 +322,10 @@ describe("parseMentions - file context tracking identity (#1271)", () => {
 		const ws = await makeDir("track-ws-")
 		await mkdir(path.join(ws, "src"))
 		await writeFile(path.join(ws, "src", "file.ts"), "workspace version\n")
-		const tracker = { trackFileContext: vi.fn() } as unknown as FileContextTracker
+		const tracker = { trackFileContext: vi.fn(async () => {}) } satisfies Pick<
+			FileContextTracker,
+			"trackFileContext"
+		>
 		try {
 			await parseMentions("@/src/file.ts", ws, tracker)
 

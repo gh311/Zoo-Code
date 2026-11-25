@@ -1498,6 +1498,32 @@ describe("ChatTextArea", () => {
 			return textarea
 		}
 
+		it("offers an opened tab as an absolute mention item when the tab has no workspace", () => {
+			// Issue #1271: a tab without a workspace posts an absolute path,
+			// and the query menu must keep it after the path filter — with
+			// the single-slash absolute mention value.
+			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				filePaths: [],
+				openedTabs: [{ label: "notes.txt", isActive: true, path: "/tmp/notes.txt" }],
+				apiConfiguration: {
+					apiProvider: providerIdentifiers.anthropic,
+				},
+				taskHistory: [],
+				cwd: "/test/workspace",
+			})
+
+			const { container } = render(<ChatTextArea {...defaultProps} inputValue="" />)
+			const textarea = getTextarea(container)
+
+			fireEvent.change(textarea, { target: { value: "@n", selectionStart: 2, selectionEnd: 2 } })
+
+			// The OpenedFile item survives the path filter: the menu names the
+			// tab's file and the folder it lives in.
+			expect(screen.getByText("notes.txt")).toBeTruthy()
+			expect(screen.getByText("tmp")).toBeTruthy()
+			expect(screen.getByText("tmp")).toBeTruthy()
+		})
+
 		it("inserts command text at the cursor via the insertTextIntoTextarea message", () => {
 			render(<ChatTextArea {...defaultProps} inputValue="hello " />)
 

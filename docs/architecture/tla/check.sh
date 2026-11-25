@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs every TLC config here. Spec.cfg must pass. Each Spec.Variant.cfg must fail.
+# Runs every TLC config here. Spec.cfg and every Spec.Pass*.cfg must pass.
+# Each other Spec.<Variant>.cfg must fail.
 # Usage: TLA_JAR=/path/to/tla2tools.jar ./check.sh Spec [Spec ...]
 #        TLA_JAR=/path/to/tla2tools.jar ./check.sh all   (every spec, for a release or a change to this script)
 set -u
@@ -26,6 +27,7 @@ for spec in $specs; do
 		[ -f "$cfg" ] || continue
 		want=pass
 		[ "$cfg" = "$spec.cfg" ] || want=fail
+		case "$cfg" in "$spec".Pass*.cfg) want=pass ;; esac
 		java -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC -metadir "$(mktemp -d -p "$meta")/s" -config "$cfg" "$module" >"$meta/out" 2>&1
 		got=unknown
 		grep -q "No error has been found" "$meta/out" && got=pass

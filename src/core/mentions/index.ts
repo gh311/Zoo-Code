@@ -33,24 +33,25 @@ async function pathExists(absPath: string): Promise<boolean> {
 }
 
 /**
- * Absolute path for a mention, in two attempts (#1271).
+ * Absolute path for a mention (#1271).
  *
- * First cwd-relative: with a workspace open, '@/src/file.ts' must keep
- * resolving under the task cwd. But an open tab OUTSIDE the workspace is
- * emitted as a single-slash absolute mention ('@/tmp/notes.txt'), and
- * naively stripping the slash would pin it under the cwd. When the
- * cwd-relative path does not exist and the raw mention (with its leading
- * slash) is absolute, fall back to the raw absolute path. The Windows
- * '/C:/Users/...' form already resolves via the cwd-relative attempt and is
- * unaffected.
+ * A root-anchored raw token resolves absolute-first: an open tab OUTSIDE
+ * the workspace is emitted as a single-slash absolute mention
+ * ('@/tmp/notes.txt'), so the tab's file must win even when a
+ * cwd-relative shadow of the stripped path exists (thread 4685318951).
+ * A workspace-relative '@/src/file.ts' keeps the cwd attempt as its
+ * fallback: the root-anchored twin rarely exists, and the cwd path
+ * resolves it when the root path does not. The Windows '/C:/Users/...'
+ * form is not absolute after the leading slash and resolves through the
+ * cwd attempt unchanged.
  */
 async function resolveMentionAbsPath(cwd: string, strippedPath: string, rawMention: string): Promise<string> {
 	const cwdResolved = path.resolve(cwd, strippedPath)
-	if (await pathExists(cwdResolved)) {
-		return cwdResolved
-	}
 	if (path.isAbsolute(rawMention)) {
-		return path.resolve(unescapeSpaces(rawMention))
+		const rawResolved = path.resolve(unescapeSpaces(rawMention))
+		if (await pathExists(rawResolved)) {
+			return rawResolved
+		}
 	}
 	return cwdResolved
 }
@@ -134,7 +135,7 @@ ${result.content}`
 export async function parseMentions(
 	text: string,
 	cwd: string,
-	fileContextTracker?: FileContextTracker,
+	fileContextTracker?: Pick<FileContextTracker, "trackFileContext">,
 	rooIgnoreController?: RooIgnoreController,
 	showRooIgnoredFiles: boolean = false,
 	includeDiagnosticMessages: boolean = true,
@@ -302,13 +303,12 @@ async function getFileOrFolderContentWithMetadata(
 	cwd: string,
 	rooIgnoreController?: any,
 	showRooIgnoredFiles: boolean = false,
-	fileContextTracker?: FileContextTracker,
+	fileContextTracker?: Pick<FileContextTracker, "trackFileContext">,
 ): Promise<MentionContentBlock> {
 	const unescapedPath = unescapeSpaces(mentionPath)
-	// Two-attempt resolution (#1271): '@/x' stays cwd-relative first, but an
-	// open tab outside the workspace is emitted as a single-slash absolute
-	// mention; when the cwd-relative path does not exist, resolve the raw
-	// absolute mention path instead of pinning the tab under the cwd.
+	// Root-anchored tokens resolve absolute-first (#1271): an open tab
+	// outside the workspace is emitted as a single-slash absolute mention,
+	// and its file wins even when a cwd-relative shadow exists.
 	const absPath = await resolveMentionAbsPath(cwd, unescapedPath, `/${mentionPath}`)
 	const isFolder = mentionPath.endsWith("/")
 
@@ -339,23 +339,25 @@ async function getFileOrFolderContentWithMetadata(
 			try {
 				const result = await extractTextFromFileWithMetadata(absPath)
 
-				// Track the identity that supplied the content: the
-				// relative mention path when the cwd-relative attempt
-				// resolved it, the resolved absolute path when the
-				// absolute fallback read outside the cwd — the
-				// tracker re-resolves relative values against the
-				// workspace cwd, which would watch the wrong file
-				// (PR #2681 thread 4689348741).
+				// The identity that supplied the content: the relative
+				// mention path when the cwd attempt resolved it, the
+				// resolved absolute path when the root-anchored attempt
+				// read outside the cwd. The tracker re-resolves relative
+				// values against the workspace cwd, which would watch the
+				// wrong file (PR #2681 thread 4689348741). The returned
+				// path and content header must match that identity, or a
+				// later read of the mention value targets the wrong file
+				// (PR #2681 thread 4690050706).
+				const cwdResolved = path.resolve(cwd, unescapedPath)
+				const servedPath = absPath === cwdResolved ? mentionPath : absPath
 				if (fileContextTracker) {
-					const cwdResolved = path.resolve(cwd, unescapedPath)
-					const trackedPath = absPath === cwdResolved ? mentionPath : absPath
-					await fileContextTracker.trackFileContext(trackedPath, "file_mentioned")
+					await fileContextTracker.trackFileContext(servedPath, "file_mentioned")
 				}
 
 				return {
 					type: "file",
-					path: mentionPath,
-					content: formatFileReadResult(mentionPath, result),
+					path: servedPath,
+					content: formatFileReadResult(servedPath, result),
 					metadata: {
 						totalLines: result.totalLines,
 						returnedLines: result.returnedLines,
