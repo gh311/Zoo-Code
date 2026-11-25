@@ -12,7 +12,8 @@
 \* workspace as a single-slash absolute mention ('@/HOME/x.ts'), so without
 \* the fallback the parser pins the tab under the task cwd.
 \* Input domain: tracker cwd in {"", root}; the Desktop exists or not;
-\* one open tab inside the root or in the home folder.
+\* one open tab inside the root or in the home folder; the stripped
+\* absolute tab path also exists under the task cwd or not (ShadowCwd).
 \* Failure 1: no workspace and the tracker posts no tabs. The @file menu
 \* is empty.
 \* Failure 2: no workspace and the tab path is made "relative" against the
@@ -28,7 +29,13 @@
 \* NoPhantomDesktopSteer.
 \* Expected before the run: the Unfixed config models the old code and
 \* must fail. The fixed config must hold. Each sabotage drops one guard.
-\* Result: Fixed holds in 8 distinct states. Unfixed and NoPost violate
+\* Result: With the shadow oracle on, the pre-reconciliation invariant
+\* fails in the initial state cwd = "", desk = FALSE, loc = "out"
+\* (TaskCwd = "HOME"): TLC's counterexample has the mention resolving
+\* to the cwd-relative shadow HOME/HOME/x.ts instead of the open tab
+\* HOME/x.ts — the intended cwd-first trade-off encoded in
+\* MentionResolvesToOpenTab (r4689348711). Fixed then holds in 8
+\* distinct states. Unfixed and NoPost violate
 \* TabsReachWebview; RelTab (tabs stay relative against the empty cwd)
 \* violates MentionResolvesToOpenTab; RelAlways (the resolver never falls
 \* back to the raw absolute path) violates MentionResolvesToOpenTab in the
@@ -48,7 +55,9 @@
 \* cwd-relative attempt, which the model keeps first); the debounce timers;
 \* multi-root workspaces.
 \* Cost: TLC runs in under a second with 8 input states.
-\* Review: 0 covered, 0 added, 0 gap. First version written with the fix.
+\* Review: 0 covered, 1 added, 0 gap. First version written with the fix.
+\* Added mid-review (PR #2681 thread 4689348711): the ShadowCwd
+\* existence oracle and the reconciled MentionResolvesToOpenTab.
 
 EXTENDS Naturals
 
@@ -63,7 +72,11 @@ CONSTANTS
     \* Task cwd uses Desktop only when the Desktop directory exists.
     DeskOnlyIfExists,
     \* The Desktop prompt example appears only when Desktop exists.
-    GateDesktopSteer
+    GateDesktopSteer,
+    \* The existence oracle for the cwd-relative shadow: the stripped
+    \* absolute tab path also exists under the task cwd (review thread
+    \* 4689348711 on PR #2681 — the real fs permits this case).
+    ShadowCwd
 
 VARIABLES
     cwd,   \* tracker cwd: "" (no workspace) or "WS" (workspace root)
@@ -95,14 +108,22 @@ TaskCwd == IF cwd # "" THEN "WS"
     ELSE IF DeskOnlyIfExists THEN "HOME"
     ELSE "DESK"
 
+\* path.resolve(taskCwd, "HOME/x.ts") — the cwd-relative shadow of the
+\* stripped absolute tab path, when the oracle permits one.
+ShadowPath ==
+    IF TaskCwd = "WS" THEN "WS/HOME/x.ts"
+    ELSE IF TaskCwd = "DESK" THEN "DESK/HOME/x.ts"
+    ELSE "HOME/HOME/x.ts"
+
 \* Attempt 1 of the parser (src/core/mentions/index.ts):
 \* mention.slice(1) resolved against the task cwd. The workspace-relative
 \* 'a.ts' exists only under the root; '../HOME/x.ts' climbs out of any
-\* base to the real file; a stripped absolute path never exists under the
-\* task cwd.
+\* base to the real file. A stripped absolute tab path exists under the
+\* task cwd only when the oracle permits a shadow file (r4689348711).
 RelTarget(p) ==
     IF p = "a.ts" THEN IF TaskCwd = "WS" THEN "WS/a.ts" ELSE "LOST"
     ELSE IF p = "../HOME/x.ts" THEN "HOME/x.ts"
+    ELSE IF p = "HOME/x.ts" THEN IF ShadowCwd THEN ShadowPath ELSE "LOST"
     ELSE "LOST"
 
 \* Attempt 2: the raw mention (leading slash kept) is absolute and
@@ -134,8 +155,17 @@ Spec == Init /\ [][Next]_<<cwd, desk, loc>>
 \* Every open tab reaches the webview, with or without a workspace.
 TabsReachWebview == PostedPath(loc) # "unposted"
 
-\* Every OpenedFile mention resolves to the path of the open tab.
-MentionResolvesToOpenTab == Resolve(PostedPath(loc)) = TabFs(loc)
+\* Every OpenedFile mention resolves to the path of the open tab, or —
+\* reconciled with r4689348711 — to the cwd-relative shadow when the
+\* existence oracle permits one and the resolver keeps the absolute
+\* fallback: cwd-first precedence is intended for every single-slash
+\* mention, because the parser cannot tell a tab-emitted absolute
+\* mention from a user-typed workspace-relative one, and absolute-first
+\* would break the '@/src/file.ts' workspace contract.
+MentionResolvesToOpenTab ==
+    Resolve(PostedPath(loc)) = TabFs(loc)
+    \/ (ShadowCwd /\ AbsFallback /\ PostedPath(loc) = "HOME/x.ts"
+        /\ Resolve(PostedPath(loc)) = ShadowPath)
 
 \* The task cwd is never a directory that does not exist.
 TaskCwdExists == (TaskCwd = "DESK") => desk
