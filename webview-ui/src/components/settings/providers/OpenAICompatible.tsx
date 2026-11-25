@@ -277,6 +277,13 @@ export const OpenAICompatible = ({
 				)}
 			</div>
 
+			<div>
+				<Checkbox
+					checked={apiConfiguration.openAiOmitParallelToolCalls ?? false}
+					onChange={handleInputChange("openAiOmitParallelToolCalls", noTransform)}>
+					{t("settings:providers.openAiOmitParallelToolCalls")}
+				</Checkbox>
+			</div>
 			<div className="mb-4">
 				<label id="openai-extra-body-label" className="block font-medium mb-1">
 					{t("settings:providers.extraBody")}

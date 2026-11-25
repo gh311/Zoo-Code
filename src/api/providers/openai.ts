@@ -243,8 +243,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
 				...(reasoning && reasoning),
 				tools: this.convertToolsForOpenAI(metadata?.tools, strictToolSchemas),
-				tool_choice: metadata?.tool_choice,
-				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+				...(this.options.openAiOmitParallelToolCalls
+					? {}
+					: {
+							tool_choice: metadata?.tool_choice,
+							parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+						}),
 			}
 
 			// Add max_tokens if needed
@@ -311,8 +315,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...reasoning,
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools, strictToolSchemas),
-				tool_choice: metadata?.tool_choice,
-				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+				...(this.options.openAiOmitParallelToolCalls
+					? {}
+					: {
+							tool_choice: metadata?.tool_choice,
+							parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+						}),
 			}
 
 			// Add max_tokens if needed
@@ -605,8 +613,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				temperature: undefined,
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools, strictToolSchemas),
-				tool_choice: metadata?.tool_choice,
-				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+				...(this.options.openAiOmitParallelToolCalls
+					? {}
+					: {
+							tool_choice: metadata?.tool_choice,
+							parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+						}),
 			}
 
 			// O3 family models do not support the deprecated max_tokens parameter
@@ -640,8 +652,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				temperature: undefined,
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools, strictToolSchemas),
-				tool_choice: metadata?.tool_choice,
-				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+				...(this.options.openAiOmitParallelToolCalls
+					? {}
+					: {
+							tool_choice: metadata?.tool_choice,
+							parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+						}),
 			}
 
 			// O3 family models do not support the deprecated max_tokens parameter

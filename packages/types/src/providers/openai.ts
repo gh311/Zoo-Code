@@ -1208,5 +1208,6 @@ export const openAiProviderDefinition = createProviderDefinition({
 		openAiHostHeader: z.string().optional(), // Keep temporarily for backward compatibility during migration.
 		openAiHeaders: z.record(z.string(), z.string()).optional(),
 		openAiExtraBody: openAiExtraBodySchema,
+		openAiOmitParallelToolCalls: z.boolean().optional(),
 	},
 })
