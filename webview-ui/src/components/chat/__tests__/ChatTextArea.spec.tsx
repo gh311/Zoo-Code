@@ -1522,6 +1522,10 @@ describe("ChatTextArea", () => {
 			expect(screen.getByText("notes.txt")).toBeTruthy()
 			expect(screen.getByText("tmp")).toBeTruthy()
 			expect(screen.getByText("tmp")).toBeTruthy()
+
+			// Selecting the mention wires the value through to setInputValue.
+			fireEvent.keyDown(textarea, { key: "Enter" })
+			expect(defaultProps.setInputValue).toHaveBeenCalledWith("@//tmp/notes.txt ")
 		})
 
 		it("inserts command text at the cursor via the insertTextIntoTextarea message", () => {

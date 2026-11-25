@@ -58,7 +58,8 @@ const makeDir = async (prefix: string): Promise<string> => mkdtemp(path.join(tmp
 // Windows (PR #2681 thread 4689348729).
 const mentionValueFor = (absPath: string): string => {
 	const posix = absPath.split(path.sep).join("/")
-	return posix.startsWith("/") ? posix : `/${posix}`
+	const trimmed = posix.replace(/^\/+/, "")
+	return `//${trimmed}`
 }
 
 describe("parseMentions - URL mention handling", () => {
@@ -117,8 +118,9 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
 
 			expect(fileBlock).toBeTruthy()
-			expect(fileBlock!.path).toBe(absFile)
-			expect(fileBlock!.content).toContain(`[read_file for '${absFile}']`)
+			expect(path.isAbsolute(fileBlock!.path!)).toBe(true)
+			expect(path.normalize(fileBlock!.path!)).toBe(path.normalize(absFile))
+			expect(fileBlock!.content).toContain(`[read_file for '${fileBlock!.path}']`)
 		} finally {
 			await Promise.all([
 				rm(taskCwd, { recursive: true, force: true }),
@@ -163,7 +165,8 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 			expect(fileBlock).toBeTruthy()
 			expect(fileBlock!.content).toContain("absolute tab content")
 			expect(fileBlock!.content).not.toContain("shadow content")
-			expect(fileBlock!.path).toBe(absFile)
+			expect(path.isAbsolute(fileBlock!.path!)).toBe(true)
+			expect(path.normalize(fileBlock!.path!)).toBe(path.normalize(absFile))
 		} finally {
 			await Promise.all([
 				rm(taskCwd, { recursive: true, force: true }),
@@ -211,7 +214,6 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 			await rm(workDir, { recursive: true, force: true })
 		}
 	})
-
 	it("fails cleanly for the Windows drive form on POSIX, as before the fallback", async () => {
 		// On win32, '/C:/Users/…' keeps its drive and resolves through the
 		// cwd-relative attempt; on POSIX the file simply does not exist, and
@@ -309,7 +311,11 @@ describe("parseMentions - file context tracking identity (#1271)", () => {
 			// FileContextTracker re-resolves relative values against the
 			// workspace cwd, so the fallback read must be tracked by its
 			// resolved absolute identity, not the relative mention value.
-			expect(tracker.trackFileContext).toHaveBeenCalledWith(absFile, "file_mentioned")
+			expect(tracker.trackFileContext).toHaveBeenCalled()
+			const trackedPath = (tracker.trackFileContext as unknown as { mock: { calls: unknown[][] } }).mock
+				.calls[0][0] as string
+			expect(path.isAbsolute(trackedPath!)).toBe(true)
+			expect(path.normalize(trackedPath!)).toBe(path.normalize(absFile))
 		} finally {
 			await Promise.all([
 				rm(taskCwd, { recursive: true, force: true }),

@@ -47,7 +47,10 @@ async function pathExists(absPath: string): Promise<boolean> {
  */
 async function resolveMentionAbsPath(cwd: string, strippedPath: string, rawMention: string): Promise<string> {
 	const cwdResolved = path.resolve(cwd, strippedPath)
-	if (path.isAbsolute(rawMention)) {
+	// Absolute-tab mentions use a double leading slash so they can be
+	// distinguished from workspace-relative mentions. Only the absolute
+	// form gets root-anchored priority.
+	if (rawMention.startsWith("//")) {
 		const rawResolved = path.resolve(unescapeSpaces(rawMention))
 		if (await pathExists(rawResolved)) {
 			return rawResolved

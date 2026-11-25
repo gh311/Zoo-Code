@@ -32,7 +32,11 @@ function getBasename(filepath: string): string {
  * the mention stays a single-slash absolute path.
  */
 export function openedFileMentionValue(tabPath: string): string {
-	return tabPath.startsWith("/") ? tabPath : `/${tabPath}`
+	const trimmed = tabPath.replace(/^\/+/, "")
+	// Absolute tab paths (no workspace) use a double leading slash so
+	// the mention resolver can distinguish them from workspace-relative
+	// mentions. Relative tab paths keep a single leading slash.
+	return tabPath.startsWith("/") ? `//${trimmed}` : `/${trimmed}`
 }
 
 export function insertMention(
