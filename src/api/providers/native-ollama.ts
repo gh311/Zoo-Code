@@ -16,7 +16,7 @@ import {
 } from "./utils/abort-signal"
 import { getLoggableOrigin } from "./utils/endpoint-origin"
 import { TagMatcher } from "../../utils/tag-matcher"
-import { extractLeakedToolCalls, unresolvedRecoveryStartIndex } from "./vscode-lm"
+import { extractLeakedToolCallSegments, unresolvedRecoveryStartIndex } from "./vscode-lm"
 import { isProxyEnabled } from "../../utils/networkProxy"
 import type {
 	SingleCompletionHandler,
@@ -554,6 +554,16 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 			const toolCallIds: string[] = []
 			// Buffer for pseudo-call recovery from content
 			const pseudoCallIds: string[] = []
+			// Native tool calls that arrived while a recovery holdback was
+			// active. The held text precedes them in the model's response,
+			// so they wait until end-of-stream and calls recovered from
+			// that text claim the earlier indices. offset is the retained
+			// buffer length at arrival and segments the buffer for the
+			// response-order interleave.
+			const deferredNativeCalls: Array<{ id: string; name: string; args: string; offset: number }> = []
+			// Emission counter for tool_call_partial indices. Tracks
+			// toolCallIndex unless calls wait behind recovered ones.
+			let emittedCallCount = 0
 			// Splits streamed text into the safe prefix to yield now and the
 			// unresolved tail that end-of-stream recovery still needs. The
 			// streamed prefix feeds the final scan as its quoting context.
@@ -608,15 +618,27 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 						for (const toolCall of chunk.message.tool_calls) {
 							// Generate a unique ID for this tool call
 							const toolCallId = `ollama-tool-${toolCallIndex}`
+							toolCallIndex++
+							if (recoverPseudoCalls && recoveryStream.buffer.length > 0) {
+								// Held recovery text precedes this call in the
+								// model's response, so defer it and let recovered
+								// calls claim the earlier place.
+								deferredNativeCalls.push({
+									id: toolCallId,
+									name: toolCall.function.name,
+									args: JSON.stringify(toolCall.function.arguments),
+									offset: recoveryStream.buffer.length,
+								})
+								continue
+							}
 							toolCallIds.push(toolCallId)
 							yield {
 								type: "tool_call_partial",
-								index: toolCallIndex,
+								index: emittedCallCount++,
 								id: toolCallId,
 								name: toolCall.function.name,
 								arguments: JSON.stringify(toolCall.function.arguments),
 							}
-							toolCallIndex++
 						}
 					}
 
@@ -644,28 +666,60 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 
 				// Recover pseudo-call blocks from the retained tail. Text already
 				// streamed stays delivered and feeds the scan as context, so the
-				// recovered verdicts match a whole-input pass.
+				// recovered verdicts match a whole-input pass. Native arrivals
+				// segment the buffer, and each segment's calls are emitted just
+				// before the native call that follows it, so every tool call
+				// keeps the position the model wrote it at.
 				if (recoverPseudoCalls && recoveryStream.buffer.length > 0) {
-					const { calls, leftoverText } = extractLeakedToolCalls(
+					const boundaries = [...new Set(deferredNativeCalls.map((call) => call.offset))].sort(
+						(a, b) => a - b,
+					)
+					const { calls, leftoverText } = extractLeakedToolCallSegments(
 						recoveryStream.buffer,
 						providedToolSchemas,
 						recoveryStream.streamed,
+						boundaries,
 					)
 					if (leftoverText) {
 						yield { type: "text", text: leftoverText }
 					}
-					for (const call of calls) {
+					// An unplaced call means a block straddled a native arrival;
+					// fall back to the whole-text order instead of losing it.
+					const unplaced = calls.some((call) => call.segment < 0)
+					const ordered: Array<{ name: string; args: string; pseudo: boolean }> = []
+					if (unplaced) {
+						for (const deferred of deferredNativeCalls) {
+							ordered.push({ name: deferred.name, args: deferred.args, pseudo: false })
+						}
+						for (const call of calls) {
+							ordered.push({ name: call.name, args: JSON.stringify(call.input), pseudo: true })
+						}
+					} else {
+						for (let seg = 0; seg <= boundaries.length; seg++) {
+							for (const call of calls.filter((entry) => entry.segment === seg)) {
+								ordered.push({ name: call.name, args: JSON.stringify(call.input), pseudo: true })
+							}
+							for (const deferred of deferredNativeCalls.filter(
+								(entry) => entry.offset === boundaries[seg],
+							)) {
+								ordered.push({ name: deferred.name, args: deferred.args, pseudo: false })
+							}
+						}
+					}
+					for (const call of ordered) {
 						const id = `ollama-tool-${toolCallIndex}`
-						pseudoCallIds.push(id)
+						toolCallIndex++
 						toolCallIds.push(id)
+						if (call.pseudo) {
+							pseudoCallIds.push(id)
+						}
 						yield {
 							type: "tool_call_partial",
-							index: toolCallIndex,
+							index: emittedCallCount++,
 							id,
 							name: call.name,
-							arguments: JSON.stringify(call.input),
+							arguments: call.args,
 						}
-						toolCallIndex++
 					}
 				}
 

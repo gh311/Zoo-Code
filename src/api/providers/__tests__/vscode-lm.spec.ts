@@ -117,6 +117,7 @@ import {
 	VsCodeLmHandler,
 	getVsCodeLmModels,
 	extractLeakedToolCalls,
+	extractLeakedToolCallSegments,
 	trailingPartialToolMarkerLength,
 	unresolvedRecoveryStartIndex,
 	middleOutTruncate,
@@ -5146,6 +5147,40 @@ describe("leaked tool-call recovery", () => {
 
 			expect(calls).toEqual([])
 			expect(leftoverText).toBe("just a normal reply")
+		})
+	})
+
+	describe("extractLeakedToolCallSegments", () => {
+		it("annotates each recovered call with the segment between boundaries", () => {
+			const first = wrap(invoke("update_todo_list", param("todos", "[x] one")))
+			const second = wrap(invoke("update_todo_list", param("todos", "[x] two")))
+			const text = `go:\n${first}\nmid\n${second}`
+			const boundary = 4 + first.length
+
+			const { calls } = extractLeakedToolCallSegments(text, new Set(["update_todo_list"]), "", [boundary])
+
+			expect(calls.map((call) => [call.segment, call.input.todos])).toStrictEqual([
+				[0, "[x] one"],
+				[1, "[x] two"],
+			])
+		})
+
+		it("marks every call unplaced when a block straddles a boundary", () => {
+			const block = wrap(invoke("update_todo_list", param("todos", "[x] one")))
+			const boundary = Math.floor(block.length / 2)
+
+			const { calls } = extractLeakedToolCallSegments(block, new Set(["update_todo_list"]), "", [boundary])
+
+			expect(calls).toHaveLength(1)
+			expect(calls[0]?.segment).toBe(-1)
+		})
+
+		it("returns unplaced calls when there are no boundaries", () => {
+			const text = `go:\n${wrap(invoke("update_todo_list", param("todos", "[x] one")))}`
+
+			const { calls } = extractLeakedToolCallSegments(text, new Set(["update_todo_list"]), "", [])
+
+			expect(calls.map((call) => call.segment)).toStrictEqual([-1])
 		})
 	})
 

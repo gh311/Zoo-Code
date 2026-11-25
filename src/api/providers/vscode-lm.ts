@@ -718,6 +718,65 @@ export function extractLeakedToolCalls(
 	return extractLeakedToolCallsWithState(text, validTools, scan)
 }
 
+/**
+ * Extracts leaked `<invoke>` calls from `text`, annotating each with the segment
+ * it belongs to. Segments are the regions between `boundaries` (buffer lengths at
+ * which the caller received native tool calls), so the caller can interleave each
+ * segment's calls with its native call and keep the model's response order.
+ *
+ * Segmenting must never lose a call a whole-text pass would recover: a block that
+ * straddles a boundary parses in neither segment, so when the segment pass does
+ * not reproduce the whole-text verdicts every call is reported with segment -1
+ * and the caller appends them after its native calls.
+ *
+ * @internal Exported for focused implementation tests.
+ */
+export function extractLeakedToolCallSegments(
+	text: string,
+	validTools: ReadonlySet<string> | LeakedToolSchemas,
+	precedingText: string,
+	boundaries: number[],
+): {
+	calls: Array<{ name: string; input: Record<string, unknown>; segment: number }>
+	leftoverText: string
+} {
+	const whole = extractLeakedToolCalls(text, validTools, precedingText)
+	const edges = [
+		0,
+		...[...new Set(boundaries)].filter((b) => b > 0 && b <= text.length).sort((a, b) => a - b),
+		text.length,
+	]
+	const unplaced = {
+		calls: whole.calls.map((call) => ({ ...call, segment: -1 })),
+		leftoverText: whole.leftoverText,
+	}
+	if (edges.length === 2) {
+		return unplaced
+	}
+	const scan = new QuotingScanState()
+	scan.advance(precedingText)
+	const calls: Array<{ name: string; input: Record<string, unknown>; segment: number }> = []
+	const leftovers: string[] = []
+	for (let i = 0; i + 1 < edges.length; i++) {
+		const part = extractLeakedToolCallsWithState(text.slice(edges[i], edges[i + 1]), validTools, scan)
+		for (const call of part.calls) {
+			calls.push({ ...call, segment: i })
+		}
+		leftovers.push(part.leftoverText)
+	}
+	const sameVerdicts =
+		calls.length === whole.calls.length &&
+		calls.every(
+			(call, i) =>
+				call.name === whole.calls[i].name &&
+				JSON.stringify(call.input) === JSON.stringify(whole.calls[i].input),
+		)
+	if (!sameVerdicts) {
+		return unplaced
+	}
+	return { calls, leftoverText: leftovers.join("") }
+}
+
 function extractLeakedToolCallsWithState(
 	text: string,
 	validTools: ReadonlySet<string> | LeakedToolSchemas,

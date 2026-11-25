@@ -150,9 +150,16 @@ describe("NativeOllamaHandler", () => {
 		it("should stream plain text before the stream ends when tools are offered", async () => {
 			// Recovery used to buffer every text chunk until the stream closed,
 			// so the caller saw nothing mid-stream and lost it all on a failure.
+			// The mock stays pending on a gate until the first text assertion has
+			// succeeded, so a handler that buffers chunks and replays them after
+			// completion cannot satisfy this test.
+			let releaseSecondChunk!: () => void
+			const secondChunkGate = new Promise<void>((resolve) => {
+				releaseSecondChunk = resolve
+			})
 			mockChat.mockImplementation(async function* () {
 				yield { message: { content: "Hello " } }
-				await new Promise((resolve) => nativeSetTimeout(resolve, 20))
+				await secondChunkGate
 				yield { message: { content: "world" } }
 			})
 
@@ -162,10 +169,16 @@ describe("NativeOllamaHandler", () => {
 			})
 			const iterator = stream[Symbol.asyncIterator]()
 
-			const first = await withDeadline(iterator.next())
-			expect(first.value).toEqual({ type: "text", text: "Hello " })
-			const second = await withDeadline(iterator.next())
-			expect(second.value).toEqual({ type: "text", text: "world" })
+			try {
+				const first = await withDeadline(iterator.next())
+				expect(first.value).toEqual({ type: "text", text: "Hello " })
+				releaseSecondChunk()
+				const second = await withDeadline(iterator.next())
+				expect(second.value).toEqual({ type: "text", text: "world" })
+			} finally {
+				releaseSecondChunk()
+				await iterator.return?.(undefined)
+			}
 		})
 
 		it("should keep streaming ordinary prose that contains a stray angle bracket", async () => {
@@ -212,8 +225,115 @@ describe("NativeOllamaHandler", () => {
 			expect(text).toBe("Running now \ndone")
 		})
 
+		it("should place a recovered pseudo call before a native call that arrives after it", async () => {
+			// The model wrote the pseudo call as text first; the native call
+			// arrives in a later chunk, so the recovered call keeps the earlier
+			// index and runs first.
+			mockChat.mockImplementation(async function* () {
+				yield {
+					message: {
+						content:
+							'<function_calls><invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke></function_calls>',
+					},
+				}
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Paris" } } }],
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => [call.index, call.name, call.arguments])).toStrictEqual([
+				[0, "get_weather", JSON.stringify({ location: "Berlin" })],
+				[1, "get_weather", JSON.stringify({ location: "Paris" })],
+			])
+		})
+
+		it("should keep a native call first when its chunk arrives before the pseudo call", async () => {
+			mockChat.mockImplementation(async function* () {
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Paris" } } }],
+					},
+				}
+				yield {
+					message: {
+						content:
+							'<function_calls><invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke></function_calls>',
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => [call.index, call.name, call.arguments])).toStrictEqual([
+				[0, "get_weather", JSON.stringify({ location: "Paris" })],
+				[1, "get_weather", JSON.stringify({ location: "Berlin" })],
+			])
+		})
+
+		it("should not lose a pseudo call whose block straddles a native arrival", async () => {
+			// The block completes across the native arrival, so neither segment
+			// parses it; the whole-text fallback must still recover it once.
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: '<function_calls><invoke name="get_weather">' } }
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Paris" } } }],
+					},
+				}
+				yield {
+					message: {
+						content: '<parameter name="location">Berlin</parameter></invoke></function_calls>',
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => [call.name, call.arguments])).toStrictEqual([
+				["get_weather", JSON.stringify({ location: "Paris" })],
+				["get_weather", JSON.stringify({ location: "Berlin" })],
+			])
+		})
+
 		it("should keep a fence-quoted invoke block as text while streaming the fence prose", async () => {
-			const quoted = '<invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke>'
+			// The wrapper alone would recover this block, so the fixture wraps it
+			// and only the streamed fence state has to keep it as text.
+			const quoted =
+				'<function_calls><invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke></function_calls>'
 			mockChat.mockImplementation(async function* () {
 				yield { message: { content: "Example:\n```text\n" } }
 				yield { message: { content: quoted } }

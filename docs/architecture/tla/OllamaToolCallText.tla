@@ -37,7 +37,9 @@
 \* Cost: six TLC runs take about 10 seconds. Fixed focused tests take about 10 seconds.
 \* Findings 2026-11-25, PR 2695 review: truth was a rule copy of the scanner, so a
 \* rules change passed both sides; boundary-only leaks passed; Finish could not emit.
-\* Review: 0 covered, 3 added, 0 gap.
+\* Review: 0 covered, 3 added, 0 gap. Review r2 (4692726968 + 4692726987):
+\* 0 covered, 2 added (run-6 truth FALSE; EndChunk leaks only when the
+\* released region holds a complete-block token), 0 gap.
 EXTENDS Naturals, Sequences
 
 CONSTANTS RecoverTextCalls, HoldAcrossChunks, GuardQuotedMention, SuppressBlockText,
@@ -67,7 +69,9 @@ TruthLive ==
        <<FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE>>,
        <<FALSE, FALSE, FALSE, FALSE>>,
        <<FALSE>>,
-       <<TRUE, TRUE, TRUE, TRUE>> >>
+      \* Run 6 never reaches fE, so nothing in it belongs to a complete
+      \* recovered block; its release as text is not a leak.
+       <<FALSE, FALSE, FALSE, FALSE>> >>
 
 TruthCall ==
     << <<FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE>>,
@@ -94,6 +98,10 @@ Init ==
     \/ StartRun(6, <<"h1", "h2", "p1", "v">>)
 
 Quoted == qFence \/ qTicks
+
+\* A complete-block token occurs among the first upto tokens of the run.
+\* EndChunk reuses it to judge the region a dropped hold releases.
+HasCompleteBlock(run, upto) == \E i \in 1..upto : TruthLive[run][i]
 
 \* The scanner reads the quote state only when the leak guard is on.
 ScannerQuoted == GuardQuotedMention /\ Quoted
@@ -144,12 +152,14 @@ EndChunk ==
     /\ chunkNo < MaxChunks
     /\ sHold \/ sBlock = "wf"
     /\ chunkNo' = chunkNo + 1
-    /\ IF HoldAcrossChunks
+    /\ \* Dropping the hold releases held text. That is a leak only when
+       \* the released region holds a token of a complete block; an
+       \* unfinished opener alone is text, not a leak.
+       IF HoldAcrossChunks
        THEN /\ sHold' = sHold /\ sBlock' = sBlock /\ sPending' = sPending
             /\ leakSeen' = leakSeen
        ELSE /\ sHold' = FALSE /\ sBlock' = "none" /\ sPending' = sPending
-            /\ \* Dropping the hold leaks the held region, boundaries included.
-               leakSeen' = TRUE
+            /\ leakSeen' = HasCompleteBlock(runNo, pos) \/ leakSeen
     /\ UNCHANGED <<input, runNo, pos, qFence, qTicks, sinkCalls, oracleCalls, finished>>
 
 \* End of stream. An unterminated hold or block is text, not a call. Not a leak.
