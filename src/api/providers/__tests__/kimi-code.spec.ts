@@ -22,6 +22,27 @@ vi.mock("../fetchers/modelCache", () => ({
 	refreshModels: mockGetModels,
 }))
 
+// The provider injects a deadline-bearing undici fetch, so the transport
+// double must sit on the undici module, not on the global fetch.
+const { mockFetch, mockAgentConstructor, mockIsProxyEnabled } = vi.hoisted(() => ({
+	mockFetch: vi.fn<typeof fetch>(),
+	mockAgentConstructor: vi.fn(function AgentDouble(this: unknown) {
+		return { undiciAgent: true }
+	}),
+	mockIsProxyEnabled: vi.fn(() => false),
+}))
+
+vi.mock("undici", () => ({
+	__esModule: true,
+	Agent: mockAgentConstructor,
+	fetch: mockFetch,
+}))
+
+vi.mock("../../../utils/networkProxy", () => ({
+	__esModule: true,
+	isProxyEnabled: () => mockIsProxyEnabled(),
+}))
+
 describe("KimiCodeHandler", () => {
 	beforeEach(() => {
 		clearAllMocks()
@@ -65,7 +86,7 @@ describe("KimiCodeHandler", () => {
 	it("uses API key when auth method is api-key", async () => {
 		const handler = new KimiCodeHandler({ kimiCodeAuthMethod: "api-key", kimiCodeApiKey: "my-api-key" })
 		const gen = handler.createMessage("system", [{ role: "user", content: "test" }])
-		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+		mockFetch.mockResolvedValueOnce(
 			new Response(JSON.stringify({ choices: [{ message: { content: "response" }, finish_reason: "stop" }] }), {
 				status: 200,
 			}),
@@ -116,7 +137,7 @@ describe("KimiCodeHandler", () => {
 
 	it("retries with forced refresh on 401 when using OAuth", async () => {
 		const handler = new KimiCodeHandler({ kimiCodeAuthMethod: "oauth" })
-		const fetchSpy = vi.spyOn(globalThis, "fetch")
+		const fetchSpy = mockFetch
 		fetchSpy.mockResolvedValueOnce(new Response(null, { status: 401 }))
 		fetchSpy.mockResolvedValueOnce(
 			new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), {
@@ -149,7 +170,7 @@ describe("KimiCodeHandler", () => {
 
 	it("does not retry on 401 when using API key auth", async () => {
 		const handler = new KimiCodeHandler({ kimiCodeAuthMethod: "api-key", kimiCodeApiKey: "key" })
-		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 401 }))
+		mockFetch.mockResolvedValueOnce(new Response(null, { status: 401 }))
 		const gen = handler.createMessage("system", [{ role: "user", content: "test" }])
 		await expect(async () => {
 			for await (const _chunk of gen) {
@@ -161,7 +182,7 @@ describe("KimiCodeHandler", () => {
 
 	it("does not force-refresh on non-401 OAuth failures", async () => {
 		const handler = new KimiCodeHandler({ kimiCodeAuthMethod: "oauth" })
-		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 500 }))
+		mockFetch.mockResolvedValueOnce(new Response(null, { status: 500 }))
 		const gen = handler.createMessage("system", [{ role: "user", content: "test" }])
 		await expect(async () => {
 			for await (const _chunk of gen) {
@@ -204,7 +225,7 @@ describe("KimiCodeHandler", () => {
 		["empty response", () => Promise.resolve({})],
 	])("does not repeatedly block requests after model discovery %s", async (_case, discovery) => {
 		mockGetModels.mockImplementationOnce(discovery)
-		vi.spyOn(globalThis, "fetch").mockImplementation(
+		mockFetch.mockImplementation(
 			async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }),
 		)
 		const handler = new KimiCodeHandler({ kimiCodeAuthMethod: "api-key", kimiCodeApiKey: "key" })

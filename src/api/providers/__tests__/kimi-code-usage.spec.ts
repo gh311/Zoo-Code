@@ -20,7 +20,27 @@ vi.mock("../../../integrations/kimi-code/oauth", () => ({
 
 vi.mock("../fetchers/modelCache", () => ({ getModels: mockGetModels }))
 
-const mockFetch = vi.fn<typeof fetch>()
+// Keep the SDK and handler real. Only the HTTP transport is replaced.
+// The provider injects a deadline-bearing undici fetch, so the transport
+// double must sit on the undici module, not on the global fetch.
+const { mockFetch, mockAgentConstructor, mockIsProxyEnabled } = vi.hoisted(() => ({
+	mockFetch: vi.fn<typeof fetch>(),
+	mockAgentConstructor: vi.fn(function AgentDouble(this: unknown) {
+		return { undiciAgent: true }
+	}),
+	mockIsProxyEnabled: vi.fn(() => false),
+}))
+
+vi.mock("undici", () => ({
+	__esModule: true,
+	Agent: mockAgentConstructor,
+	fetch: mockFetch,
+}))
+
+vi.mock("../../../utils/networkProxy", () => ({
+	__esModule: true,
+	isProxyEnabled: () => mockIsProxyEnabled(),
+}))
 const finalUsage: OpenAI.CompletionUsage = {
 	prompt_tokens: 12,
 	completion_tokens: 7,

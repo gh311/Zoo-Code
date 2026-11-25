@@ -6,7 +6,27 @@ import { BasetenHandler } from "../baseten"
 import { collectStream, sseResponse } from "../../../test-utils/stream"
 
 // Keep the SDK and handler real. Only the HTTP transport is replaced.
-const mockFetch = vi.fn<typeof fetch>()
+// Keep the SDK and handler real. Only the HTTP transport is replaced.
+// The provider injects a deadline-bearing undici fetch, so the transport
+// double must sit on the undici module, not on the global fetch.
+const { mockFetch, mockAgentConstructor, mockIsProxyEnabled } = vi.hoisted(() => ({
+	mockFetch: vi.fn<typeof fetch>(),
+	mockAgentConstructor: vi.fn(function AgentDouble(this: unknown) {
+		return { undiciAgent: true }
+	}),
+	mockIsProxyEnabled: vi.fn(() => false),
+}))
+
+vi.mock("undici", () => ({
+	__esModule: true,
+	Agent: mockAgentConstructor,
+	fetch: mockFetch,
+}))
+
+vi.mock("../../../utils/networkProxy", () => ({
+	__esModule: true,
+	isProxyEnabled: () => mockIsProxyEnabled(),
+}))
 const recordedStream = readFileSync(new URL("./fixtures/baseten/gpt-oss-120b.sse", import.meta.url), "utf8")
 
 function makeHandler(options: ConstructorParameters<typeof BasetenHandler>[0] = {}) {
