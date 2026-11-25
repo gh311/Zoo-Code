@@ -1767,6 +1767,40 @@ export class ClineProvider
 						)
 					}
 				}
+				// Round 11 (PR 2649 review): the loop's last write can lose its
+				// race — a switch that completes while it is in flight leaves
+				// the loop's captured pair stale at installation. Close the
+				// window: capture the serving name and settings together in ONE
+				// synchronous step with no await between this read and the Task
+				// construction below, so no switch can interleave and the
+				// installed task's saved profile always equals the profile that
+				// serves it (StickyMatchesServing by construction). The
+				// persistence write is best-effort and deliberately not
+				// awaited: an await here would reopen the race this capture
+				// just closed.
+				const installationName = this.contextProxy.getValues().currentApiConfigName
+				if (installationName && installationName !== historyItem.apiConfigName) {
+					const installationSettings = { ...this.contextProxy.getProviderSettings() }
+					if (!installationSettings.apiProvider || isRetiredProvider(installationSettings.apiProvider)) {
+						const values = this.contextProxy.getValues()
+						installationSettings.apiProvider =
+							values.apiProvider && !isRetiredProvider(values.apiProvider)
+								? values.apiProvider
+								: providerIdentifiers.anthropic
+					}
+					taskApiConfiguration = installationSettings
+					this.log(
+						`Re-sticking task ${historyItem.id} to provider profile '${installationName}' at the installation point.`,
+					)
+					historyItem = { ...historyItem, apiConfigName: installationName }
+					void this.updateTaskHistory(historyItem).catch((error: unknown) => {
+						this.log(
+							`Failed to persist installation-point provider profile '${installationName}' for task ${historyItem.id}: ${
+								error instanceof Error ? error.message : String(error)
+							}.`,
+						)
+					})
+				}
 			}
 		}
 

@@ -1139,11 +1139,16 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			// so the bounded loop runs exactly three rounds. Round 3 captures
 			// switched-profile with its openai settings before its own write
 			// sets final-profile — the loop then stops at the bound.
-			expect(writeCount).toBe(3)
+			expect(writeCount).toBe(4)
 			const taskOptions = vi.mocked(Task).mock.calls.at(-1)?.[0]
-			// The task carries the round-3 captured pair.
-			expect(taskOptions?.historyItem?.apiConfigName).toBe("switched-profile")
-			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openai)
+			// Round 11 (PR 2649 review): the loop used to end diverged and
+			// install the stale round-3 pair. The installation-point capture
+			// now adopts the latest completed selection — final-profile with
+			// its openrouter settings — in one synchronous step with the
+			// Task construction, and the fourth (fire-and-forget) write
+			// persists it.
+			expect(taskOptions?.historyItem?.apiConfigName).toBe("final-profile")
+			expect(taskOptions?.apiConfiguration?.apiProvider).toBe(providerIdentifiers.openrouter)
 		})
 
 		it.each([

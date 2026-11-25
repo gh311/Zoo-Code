@@ -26,12 +26,25 @@ for spec in $specs; do
 		[ -f "$cfg" ] || continue
 		want=pass
 		[ "$cfg" = "$spec.cfg" ] || want=fail
+		# Directive overrides (PR 2649 round 11): a cfg may carry
+		# "\* expect-pass" (a must-pass variant run) and/or
+		# "\* expect-fail:<Invariant>" (the named invariant must be the
+		# specific violation). Cfgs without directives behave as before.
+		if grep -q "^[\\][*] expect-pass" "$cfg"; then want=pass; fi
+		expect_inv=$(sed -n "s/^[\\][*] expect-fail:[[:space:]]*//p" "$cfg" | head -1)
 		java -XX:+UseParallelGC -cp "$TLA_JAR" tlc2.TLC -metadir "$(mktemp -d -p "$meta")/s" -config "$cfg" "$module" >"$meta/out" 2>&1
 		got=unknown
 		grep -q "No error has been found" "$meta/out" && got=pass
 		grep -q "violated" "$meta/out" && got=fail
 		states=$(grep -o '[0-9,]* distinct states found' "$meta/out" | head -1)
-		if [ "$got" = "$want" ]; then echo "ok    $cfg ($want, $states)"; else echo "WRONG $cfg (want $want, got $got)"; bad=1; fi
+		if [ "$got" = "$want" ]; then echo "ok    $cfg ($want, $states)"; else echo "WRONG $cfg (want $want, got $got)"; bad=1; continue; fi
+		if [ -n "$expect_inv" ]; then
+			if [ "$got" = "fail" ] && grep -q "Invariant $expect_inv is violated" "$meta/out"; then
+				echo "ok    $cfg (violated $expect_inv as expected)"
+			else
+				echo "WRONG $cfg (expected the specific violation of $expect_inv)"; bad=1
+			fi
+		fi
 	done
 done
 exit $bad
