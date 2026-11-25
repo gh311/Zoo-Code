@@ -131,6 +131,12 @@ const MAX_PARTIAL_INVOKE_CARRY = 64
 class QuotingScanState {
 	private openFence: { marker: string; width: number } | null = null
 	private wrapperOpen = false
+	/**
+	 * Width of an inline code span left open by an earlier complete line (0 = none).
+	 * Same-line backtick pairs are judged per line by insideInlineSpanAt; this carry
+	 * only informs the multiline-span check at the invoke decision.
+	 */
+	private carriedSpanWidth = 0
 	/** Text of the line now being scanned, up to the point the scan has reached. */
 	sameLineBefore = ""
 
@@ -159,6 +165,11 @@ class QuotingScanState {
 			}
 			if (index < lines.length - 1) {
 				this.openFence = this.fenceAfterCurrentLine()
+				// Backtick runs on a fence-shaped line or inside an open
+				// fence are fence syntax, not code-span delimiters.
+				if (fenceBeforeLine === null && !/^ {0,3}(?:`{3,}|~{3,})/.test(this.sameLineBefore)) {
+					this.carriedSpanWidth = this.spanWidthFrom(this.carriedSpanWidth, this.sameLineBefore)
+				}
 				this.sameLineBefore = ""
 			}
 		}
@@ -172,6 +183,24 @@ class QuotingScanState {
 	/** True when the stream so far ends inside an inline code span. */
 	hasOddBacktickCountOnLine(): boolean {
 		return this.insideInlineSpanAt(this.sameLineBefore)
+	}
+
+	/** Width of the code span carried from earlier complete lines (0 = none). */
+	carriedCodeSpanWidth(): number {
+		return this.carriedSpanWidth
+	}
+
+	private spanWidthFrom(startWidth: number, prefix: string): number {
+		let activeWidth = startWidth
+		for (const run of prefix.matchAll(/`+/g)) {
+			const width = run[0].length
+			if (activeWidth === 0) {
+				activeWidth = width
+			} else if (width === activeWidth) {
+				activeWidth = 0
+			}
+		}
+		return activeWidth
 	}
 
 	/** CommonMark: a code span closes only on a backtick run of the SAME width that opened it. */
@@ -320,6 +349,18 @@ function hasQuotingCue(sameLineBefore: string): boolean {
 function isQuotedAsCode(text: string, endIndex: number, scan: QuotingScanState): boolean {
 	if (scan.isInsideCodeFence() || scan.hasOddBacktickCountOnLine()) {
 		return true
+	}
+	const carried = scan.carriedCodeSpanWidth()
+	if (carried > 0) {
+		// CommonMark code spans can span lines. The carried span
+		// quotes this block only when a same-width run closes it
+		// later; an unterminated opener stays line-bounded, so a
+		// leaked span never hides real calls.
+		for (const run of text.slice(endIndex).matchAll(/`+/g)) {
+			if (run[0].length === carried) {
+				return true
+			}
+		}
 	}
 	// Narrative words after the block on the same line mean the markup is being talked about
 	// (e.g. "never emit <invoke ...> directly"), which must not be replayed as a live call.

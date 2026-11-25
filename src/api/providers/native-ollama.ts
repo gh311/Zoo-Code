@@ -624,10 +624,14 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 							// Generate a unique ID for this tool call
 							const toolCallId = `ollama-tool-${toolCallIndex}`
 							toolCallIndex++
-							if (recoverPseudoCalls && recoveryStream.buffer.length > 0) {
-								// Held recovery text precedes this call in the
-								// model's response, so defer it and let recovered
-								// calls claim the earlier place.
+							if (
+								recoverPseudoCalls &&
+								(recoveryStream.buffer.length > 0 || deferredNativeCalls.length > 0)
+							) {
+								// Held recovery text or an already-deferred call
+								// precedes this one in the model's response, so
+								// defer it and let the earlier calls claim their
+								// places.
 								deferredNativeCalls.push({
 									id: toolCallId,
 									name: toolCall.function.name,
@@ -676,9 +680,12 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 				// before the native call that follows it, so every tool call
 				// keeps the position the model wrote it at.
 				if (recoverPseudoCalls && (recoveryStream.buffer.length > 0 || deferredNativeCalls.length > 0)) {
-					const boundaries = [...new Set(deferredNativeCalls.map((call) => call.offset))].sort(
-						(a, b) => a - b,
-					)
+					// A trim-adjusted offset can reach 0; those calls precede
+					// every segment, so they stay out of the edge list and the
+					// emission below emits them before segment zero.
+					const boundaries = [
+						...new Set(deferredNativeCalls.map((call) => call.offset).filter((offset) => offset > 0)),
+					].sort((a, b) => a - b)
 					const { calls, leftoverText } = extractLeakedToolCallSegments(
 						recoveryStream.buffer,
 						providedToolSchemas,
@@ -705,6 +712,9 @@ export class NativeOllamaHandler extends BaseProvider implements SingleCompletio
 							ordered.push({ name: call.name, args: JSON.stringify(call.input), pseudo: true })
 						}
 					} else {
+						for (const deferred of deferredNativeCalls.filter((entry) => entry.offset === 0)) {
+							ordered.push({ name: deferred.name, args: deferred.args, pseudo: false })
+						}
 						for (let seg = 0; seg <= boundaries.length; seg++) {
 							for (const call of calls.filter((entry) => entry.segment === seg)) {
 								ordered.push({ name: call.name, args: JSON.stringify(call.input), pseudo: true })

@@ -39,7 +39,12 @@
 \* rules change passed both sides; boundary-only leaks passed; Finish could not emit.
 \* Review: 0 covered, 3 added, 0 gap. Review r2 (4692726968 + 4692726987):
 \* 0 covered, 2 added (run-6 truth FALSE; EndChunk leaks only when the
-\* released region holds a complete-block token), 0 gap.
+\* released region holds a complete-block token), 0 gap. Review r3 on
+\* 7a31fb8c (4695293896 + 4695293918 + 4695293931): 1 covered (4695293931:
+\* the backtick-pair rule has no line reset here; the code now carries the
+\* span width across lines to match), 0 added, 2 gap (4695293896 +
+\* 4695293918: native tool-call arrival and segment emission are outside
+\* this model's abstraction; ordering is pinned by direct unit tests).
 EXTENDS Naturals, Sequences
 
 CONSTANTS RecoverTextCalls, HoldAcrossChunks, GuardQuotedMention, SuppressBlockText,

@@ -329,6 +329,88 @@ describe("NativeOllamaHandler", () => {
 			])
 		})
 
+		it("keeps a later native call behind deferred calls when the holdback drains", async () => {
+			// The model wrote: held marker fragment, native A, safe prose,
+			// native B. The prose drains the holdback, so B must not pass
+			// the guard and emit before the still-deferred A.
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "<in" } }
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Paris" } } }],
+					},
+				}
+				yield { message: { content: "valid prose" } }
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Berlin" } } }],
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => [call.index, call.name, call.arguments])).toStrictEqual([
+				[0, "get_weather", JSON.stringify({ location: "Paris" })],
+				[1, "get_weather", JSON.stringify({ location: "Berlin" })],
+			])
+		})
+
+		it("emits a zero-offset deferred native call before segment-zero recovered calls", async () => {
+			// A's offset is trim-adjusted to 0 when the holdback drains; a
+			// wrapped pseudo call P then completes in the retained tail and
+			// native B closes the response. The model wrote A, P, B.
+			mockChat.mockImplementation(async function* () {
+				yield { message: { content: "<in" } }
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Paris" } } }],
+					},
+				}
+				yield {
+					message: {
+						content:
+							'valid prose<function_calls><invoke name="get_weather"><parameter name="location">Berlin</parameter></invoke></function_calls>',
+					},
+				}
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "get_weather", arguments: { location: "Rome" } } }],
+					},
+				}
+			})
+
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [weatherTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => [call.name, call.arguments])).toStrictEqual([
+				["get_weather", JSON.stringify({ location: "Paris" })],
+				["get_weather", JSON.stringify({ location: "Berlin" })],
+				["get_weather", JSON.stringify({ location: "Rome" })],
+			])
+		})
+
 		it("should keep a fence-quoted invoke block as text while streaming the fence prose", async () => {
 			// The wrapper alone would recover this block, so the fixture wraps it
 			// and only the streamed fence state has to keep it as text.

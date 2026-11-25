@@ -5453,6 +5453,27 @@ describe("leaked tool-call recovery", () => {
 			expect(leftoverText).toBe(text)
 		})
 
+		it("suppresses an invoke inside a multiline code span", () => {
+			// CommonMark: code spans can span lines; the opener on one line
+			// and the closer on a later line still quote everything between.
+			const text = "`example\n" + invoke("update_todo_list", param("todos", "x")) + "\n`"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, tools, "", true)
+
+			expect(calls).toHaveLength(0)
+			expect(leftoverText).toBe(text)
+		})
+
+		it("suppresses an invoke inside a code span split across chunks", () => {
+			const preceding = "`example\n"
+			const text = invoke("update_todo_list", param("todos", "x")) + "\n`"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, tools, preceding, true)
+
+			expect(calls).toHaveLength(0)
+			expect(leftoverText).toBe(text)
+		})
+
 		it("suppresses an invoke introduced by a quoting cue that ends its line", () => {
 			const text = quoted("You must never emit " + invoke("update_todo_list", param("todos", "x")))
 
