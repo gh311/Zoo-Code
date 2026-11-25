@@ -3575,5 +3575,99 @@ describe("McpHub", () => {
 
 			expect(hub.findGeneratedToolBinding("mcp--svc_prod--ping")).toBeNull()
 		})
+
+		it("keeps another server's generated-name bindings when one server is deleted", async () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod")
+			registerServer(hub, "svc_prod")
+			hub.registerGeneratedToolName("mcp--svc_prod_2--ping", "svc.prod", "ping")
+			hub.registerGeneratedToolName("mcp--svc_prod--pong", "svc_prod", "pong")
+
+			const p = privates(hub)
+			p.connections = p.connections.filter((c) => c.server.name !== "svc_prod")
+			await p.deleteConnection("svc_prod")
+
+			expect(hub.findGeneratedToolBinding("mcp--svc_prod--pong")).toBeNull()
+			expect(hub.findGeneratedToolBinding("mcp--svc_prod_2--ping")).toStrictEqual({
+				serverName: "svc.prod",
+				toolName: "ping",
+			})
+		})
+
+		it("keeps exactly the safe name's own entry when it registers on a fresh hub", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc_prod")
+
+			const p = privates(hub)
+			// No displacement branch may run when nothing held the name before:
+			// the registry gains exactly the self entry and no junk key.
+			expect(p.sanitizedNameRegistry.has("_")).toBe(false)
+			expect([...p.sanitizedNameRegistry.entries()].filter(([alias]) => alias !== "test-server")).toStrictEqual([
+				["svc_prod", "svc_prod"],
+			])
+		})
+
+		it("drops the displaced server's stale alias entry when it reconnects", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod") // takes svc_prod
+			registerServer(hub, "svc_prod") // literal reclaims; svc.prod -> svc_prod_2
+
+			// svc.prod reconnects: its stale svc_prod_2 entry must go before a
+			// fresh alias is picked, so the freed suffix is reusable and only
+			// one entry maps back to svc.prod.
+			registerServer(hub, "svc.prod")
+
+			expect(hub.getServerAlias("svc.prod")).toBe("svc_prod_2")
+			const p = privates(hub)
+			expect([...p.sanitizedNameRegistry.entries()].filter(([, o]) => o === "svc.prod")).toStrictEqual([
+				["svc_prod_2", "svc.prod"],
+			])
+		})
+
+		it("freezes the generation-time bindings into a per-request snapshot", () => {
+			const hub = new McpHub(mockProvider as ClineProvider)
+			registerServer(hub, "svc.prod")
+			hub.registerGeneratedToolName("mcp--svc_prod--ping", "svc.prod", "ping")
+			const request1 = hub.snapshotGeneratedToolBindings()
+
+			// A second request builds after the literal reclaims the alias: the
+			// shared map follows the latest advertisement (thread 4683206615).
+			registerServer(hub, "svc_prod")
+			hub.registerGeneratedToolName("mcp--svc_prod--ping", "svc_prod", "ping")
+
+			expect(hub.findGeneratedToolBinding("mcp--svc_prod--ping")).toStrictEqual({
+				serverName: "svc_prod",
+				toolName: "ping",
+			})
+			// ...but request 1's frozen snapshot still routes the call to the
+			// server that issued the name.
+			expect(request1.get("mcp--svc_prod--ping")).toStrictEqual({
+				serverName: "svc.prod",
+				toolName: "ping",
+			})
+		})
+
+		it("assigns distinct resolvable aliases through connectToServer itself", async () => {
+			// The alias registration lives inside connectToServer
+			// (McpHub.ts:735): settings-driven connects must produce the same
+			// collision-free aliases the direct registration tests observe.
+			vi.mocked(fs.readFile).mockResolvedValue(
+				JSON.stringify({
+					mcpServers: {
+						"svc.prod": { type: "stdio", command: "node", args: ["a.js"] },
+						svc_prod: { type: "stdio", command: "node", args: ["b.js"] },
+					},
+				}),
+			)
+			const hub = new McpHub(mockProvider as ClineProvider)
+			await hub.waitUntilReady()
+
+			expect(hub.getServerAlias("svc.prod")).not.toBe(hub.getServerAlias("svc_prod"))
+			expect(hub.getServerAlias("svc_prod")).toBe("svc_prod")
+			expect(hub.getServerAlias("svc.prod")).toBe("svc_prod_2")
+			expect(hub.findServerNameBySanitizedName("svc_prod")).toBe("svc_prod")
+			expect(hub.findServerNameBySanitizedName("svc_prod_2")).toBe("svc.prod")
+			await hub.dispose()
+		})
 	})
 })

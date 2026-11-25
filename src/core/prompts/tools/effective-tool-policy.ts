@@ -391,6 +391,14 @@ export interface RequestPolicySnapshot {
 	experiments?: Record<string, boolean>
 	customModes?: ModeConfig[]
 	modelInfo?: ModelInfo
+	/**
+	 * MCP generated-name bindings frozen when this request's tools were
+	 * built (McpHub.snapshotGeneratedToolBindings). Dispatch of this
+	 * request's tool calls consults it before the hub's live registry, so a
+	 * later tool build or a deleteConnection cannot retarget an in-flight
+	 * call (PR 2669 review race).
+	 */
+	mcpToolBindings?: ReadonlyMap<string, { serverName: string; toolName: string }>
 }
 
 /**

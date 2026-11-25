@@ -762,6 +762,107 @@ describe("presentAssistantMessage - tool usage attribution", () => {
 			expect(askCall?.[1]).toContain('"toolName":"ping"')
 		})
 
+		it("honors the request's frozen binding when a second build overwrites the shared registry", async () => {
+			vi.mocked(validateToolUse).mockReset()
+			vi.mocked(validateToolUse).mockImplementation(() => undefined)
+			// Request 1 advertised mcp--svc_prod--ping for svc.prod. A second
+			// tool build ran after svc_prod connected and reclaimed the alias,
+			// so the shared registry now binds the name to svc_prod. Dispatch
+			// must consult the request's frozen snapshot instead (thread reply
+			// 4683206615, second-request overwrite).
+			const mockHub = {
+				findGeneratedToolBinding: (name: string) =>
+					name === "mcp--svc_prod--ping" ? { serverName: "svc_prod", toolName: "ping" } : null,
+				findServerNameBySanitizedName: () => "svc_prod",
+				getAllServers: () => [
+					{ name: "svc.prod", tools: [{ name: "ping", enabledForPrompt: true }] },
+					{ name: "svc_prod", tools: [{ name: "ping", enabledForPrompt: true }] },
+				],
+				callTool: vi.fn(),
+			}
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
+					getMcpHub: () => mockHub,
+				}),
+			}
+
+			mockTask.assistantMessageContent = [
+				{
+					type: "mcp_tool_use",
+					id: "call_native_mcp_overwrite",
+					name: "mcp--svc_prod--ping",
+					serverName: "svc_prod",
+					toolName: "ping",
+					arguments: {},
+					partial: false,
+				},
+			]
+
+			await presentAssistantMessage(mockTask as unknown as Task, {
+				...baseSnapshot,
+				mcpToolBindings: new Map([["mcp--svc_prod--ping", { serverName: "svc.prod", toolName: "ping" }]]),
+			})
+
+			const askCall = mockTask.ask.mock.calls.find(([kind]) => kind === "use_mcp_server")
+			expect(askCall?.[1]).toContain('"serverName":"svc.prod"')
+			expect(askCall?.[1]).not.toContain('"serverName":"svc_prod"')
+		})
+
+		it("routes a delete-then-dispatch call to its issuing server, never to the live alias owner", async () => {
+			vi.mocked(validateToolUse).mockReset()
+			vi.mocked(validateToolUse).mockImplementation(() => undefined)
+			// Request 1 advertised mcp--svc_prod--ping for svc.prod; the server
+			// was deleted before the response arrived, so the shared registry
+			// no longer holds the binding and the live alias resolves the name
+			// to svc_prod. Dispatch must stay with the request's frozen binding:
+			// the call targets the deleted svc.prod and the executor rejects it
+			// cleanly instead of executing on another server (thread reply
+			// 4683206615, delete-then-dispatch).
+			const mockHub = {
+				findGeneratedToolBinding: () => null,
+				findServerNameBySanitizedName: () => "svc_prod",
+				getAllServers: () => [{ name: "svc_prod", tools: [{ name: "ping", enabledForPrompt: true }] }],
+				callTool: vi.fn(),
+			}
+			mockTask.providerRef = {
+				deref: () => ({
+					getState: vi.fn().mockResolvedValue({ mode: "code", customModes: [] }),
+					getMcpHub: () => mockHub,
+				}),
+			}
+
+			mockTask.assistantMessageContent = [
+				{
+					type: "mcp_tool_use",
+					id: "call_native_mcp_delete",
+					name: "mcp--svc_prod--ping",
+					serverName: "svc_prod",
+					toolName: "ping",
+					arguments: {},
+					partial: false,
+				},
+			]
+
+			await presentAssistantMessage(mockTask as unknown as Task, {
+				...baseSnapshot,
+				mcpToolBindings: new Map([["mcp--svc_prod--ping", { serverName: "svc.prod", toolName: "ping" }]]),
+			})
+
+			// No approval prompt ever fired: the call targeted the deleted
+			// issuing server, and the executor rejects it before asking.
+			const askCall = mockTask.ask.mock.calls.find(([kind]) => kind === "use_mcp_server")
+			expect(askCall).toBeUndefined()
+			// The call never executed on any server.
+			expect(mockHub.callTool).not.toHaveBeenCalled()
+			// The rejection is a clean tool error naming the deleted issuing
+			// server, not the alias owner.
+			const pushedCalls = mockTask.pushToolResultToUserContent.mock.calls
+			expect(pushedCalls.length).toBeGreaterThan(0)
+			const rejection = pushedCalls[pushedCalls.length - 1][0] as { content?: unknown }
+			expect(String(rejection.content)).toContain('"server":"svc.prod"')
+		})
+
 		it("runs the original tool behind a suffixed segment for colliding tool names", async () => {
 			vi.mocked(validateToolUse).mockReset()
 			vi.mocked(validateToolUse).mockImplementation(() => undefined)

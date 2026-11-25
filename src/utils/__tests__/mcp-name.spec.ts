@@ -9,6 +9,7 @@ import {
 	nextServerAlias,
 	MCP_TOOL_SEPARATOR,
 	MCP_TOOL_PREFIX,
+	MAX_MCP_TOOL_NAME_LENGTH,
 } from "../mcp-name"
 
 describe("mcp-name utilities", () => {
@@ -238,6 +239,18 @@ describe("mcp-name utilities", () => {
 
 		it("should handle tool names with multiple hyphens", () => {
 			expect(buildMcpToolName("server", "get-user-profile")).toBe("mcp--server--get-user-profile")
+		})
+
+		it("truncates the assembled name to the cap when the tool segment alone overflows it", () => {
+			// A 58-character tool leaves a negative server budget, so the server
+			// segment clamps to one character and the assembled name still
+			// exceeds the 64-character cap: the last-resort slice runs and keeps
+			// exactly the first 64 characters.
+			const longTool = "t".repeat(58)
+			const result = buildMcpToolName("server", longTool)
+			expect(result).toStrictEqual(`mcp--s--${"t".repeat(56)}`)
+			expect(result.length).toBe(MAX_MCP_TOOL_NAME_LENGTH)
+			expect(result.startsWith("mcp--")).toBe(true)
 		})
 	})
 

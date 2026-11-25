@@ -6045,6 +6045,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
+			// Freeze this request's MCP bindings: dispatch of this request's
+			// tool calls must honor the generation-time mapping even when a
+			// later build or a deleteConnection mutates the shared registry
+			// before the response arrives (PR 2669, thread reply 4683206615).
+			if (this.requestPolicySnapshot) {
+				this.requestPolicySnapshot.mcpToolBindings = toolsResult.mcpToolBindings
+			}
 		}
 
 		const shouldIncludeTools = allTools.length > 0

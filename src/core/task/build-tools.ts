@@ -47,6 +47,13 @@ interface BuildToolsResult {
 	 * Use this with allowedFunctionNames in providers that support it.
 	 */
 	allowedFunctionNames?: string[]
+	/**
+	 * The MCP generated-name bindings frozen at this build. The request that
+	 * ships these tool definitions must keep them even when a later build or
+	 * a deleteConnection rewrites the hub's shared registry before the
+	 * response arrives (PR 2669 review race).
+	 */
+	mcpToolBindings?: ReadonlyMap<string, { serverName: string; toolName: string }>
 }
 
 /**
@@ -134,6 +141,9 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 	// the same disabledTools/modelInfo the native filter consumes also gate the
 	// dynamic mcp--* declarations, which all represent use_mcp_tool.
 	const mcpTools = getMcpServerTools(mcpHub, allowedMcpServers)
+	// Freeze this build's generation-time bindings right after the names
+	// are registered, before any later registration can reclaim an alias.
+	const mcpToolBindings = mcpHub ? mcpHub.snapshotGeneratedToolBindings() : undefined
 	const filteredMcpTools = filterMcpToolsForMode(mcpTools, mode, customModes, experiments, {
 		disabledTools,
 		modelInfo,
@@ -170,11 +180,13 @@ export async function buildNativeToolsArrayWithRestrictions(options: BuildToolsO
 		return {
 			tools: allTools,
 			allowedFunctionNames,
+			mcpToolBindings,
 		}
 	}
 
 	// Default behavior: return only filtered tools
 	return {
 		tools: filteredTools,
+		mcpToolBindings,
 	}
 }

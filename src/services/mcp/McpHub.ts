@@ -1541,6 +1541,18 @@ export class McpHub {
 	}
 
 	/**
+	 * A frozen copy of the generated-name bindings as of one request's tool
+	 * build. Task-level request code captures this right after building the
+	 * request's MCP tools and hands it to the streaming presenter, so a later
+	 * tool build (a server connecting mid-flight and reclaiming an alias)
+	 * or a deleteConnection cannot retarget an in-flight call (PR 2669,
+	 * thread reply 4683206615).
+	 */
+	public snapshotGeneratedToolBindings(): ReadonlyMap<string, { serverName: string; toolName: string }> {
+		return new Map(this.generatedToolBindings)
+	}
+
+	/**
 	 * The server name used in generated tool names (mcp--<alias>--tool).
 	 * Registration assigns a collision-free alias; servers registered outside
 	 * connectToServer fall back to plain sanitization.
@@ -1570,6 +1582,7 @@ export class McpHub {
 			const previousOwner = this.sanitizedNameRegistry.get(name)
 			if (previousOwner !== undefined && previousOwner !== name) {
 				const taken = this.takenAliasStrings()
+				// Stryker disable next-line CallExpression: equivalent mutant, the same key is re-set to the new owner two lines below, so the delete only changes Map insertion order and no lookup depends on key order.
 				this.sanitizedNameRegistry.delete(name)
 				this.sanitizedNameRegistry.set(nextServerAlias(previousOwner, taken), previousOwner)
 			}
@@ -1592,10 +1605,12 @@ export class McpHub {
 	private takenAliasStrings(): Set<string> {
 		const taken = new Set<string>()
 		for (const connection of this.connections) {
+			// Stryker disable next-line CallExpression: equivalent mutant, every connected name is a registry original (connectToServer registers before pushing), so the registry loop below already adds it.
 			taken.add(connection.server.name)
 		}
 		for (const [alias, original] of this.sanitizedNameRegistry) {
 			taken.add(alias)
+			// Stryker disable next-line CallExpression: equivalent mutant, a candidate alias never equals an unsafe original (sanitizer output has no dots or stripped chars) and safe originals are the alias keys added above.
 			taken.add(original)
 		}
 		return taken

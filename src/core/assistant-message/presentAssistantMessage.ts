@@ -45,7 +45,7 @@ import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 
 import { formatResponse } from "../prompts/responses"
 import { sanitizeToolUseId } from "../../utils/tool-id"
-import { normalizeMcpToolName } from "../../utils/mcp-name"
+import { normalizeMcpToolName, normalizeForComparison } from "../../utils/mcp-name"
 
 /**
  * Maps a raw, potentially model-controlled tool name to a safe analytics key.
@@ -328,14 +328,52 @@ async function presentAssistantMessageBlock(cline: Task, policySnapshot: Request
 			if (mcpHub) {
 				// A generated name stays bound to the server that issued it: the
 				// request advertised this name when it was built, so consult the
-				// generation-time binding before the live alias registry. A server
-				// that connects mid-request and reclaims the alias must not capture
-				// the call (issue #2338 review race).
-				const binding = mcpHub.findGeneratedToolBinding(normalizeMcpToolName(mcpBlock.name))
+				// generation-time binding before the live alias registry. The
+				// request's frozen snapshot wins over the hub's shared map: a
+				// second build after a mid-flight registration, or a
+				// deleteConnection, must not retarget an in-flight call; when the
+				// snapshot's issuing server is gone the call fails cleanly at
+				// execution instead of executing on another server (PR 2669
+				// review races, thread reply 4683206615).
+				const normalizedCallName = normalizeMcpToolName(mcpBlock.name)
+				// Resolve the generation-time binding for this call. Exact
+				// advertised names (raw or normalized) win; a repaired name
+				// that fuzzy-matches more than one advertised binding is
+				// ambiguous and must not dispatch to either (PR 2669 r4).
+				let binding: { serverName: string; toolName: string } | null = null
+				let ambiguousRepairedName = false
+				const bindingsMap =
+					policySnapshot.mcpToolBindings ??
+					(mcpHub && typeof mcpHub.snapshotGeneratedToolBindings === "function"
+						? mcpHub.snapshotGeneratedToolBindings()
+						: undefined)
+				if (bindingsMap) {
+					if (bindingsMap.has(mcpBlock.name)) {
+						binding = bindingsMap.get(mcpBlock.name) ?? null
+					} else if (bindingsMap.has(normalizedCallName)) {
+						binding = bindingsMap.get(normalizedCallName) ?? null
+					} else if (normalizedCallName !== mcpBlock.name) {
+						const cmp = normalizeForComparison(normalizedCallName)
+						const matches = [...bindingsMap.keys()].filter((k) => normalizeForComparison(k) === cmp)
+						if (matches.length === 1) {
+							binding = bindingsMap.get(matches[0]) ?? null
+						} else if (matches.length > 1) {
+							ambiguousRepairedName = true
+						}
+					} else {
+						const cmp = normalizeForComparison(normalizedCallName)
+						const matches = [...bindingsMap.keys()].filter((k) => normalizeForComparison(k) === cmp)
+						if (matches.length === 1) {
+							binding = bindingsMap.get(matches[0]) ?? null
+						}
+					}
+				} else if (mcpHub && typeof mcpHub.findGeneratedToolBinding === "function") {
+					binding = mcpHub.findGeneratedToolBinding(normalizedCallName)
+				}
 				if (binding) {
 					resolvedServerName = binding.serverName
 					resolvedToolName = binding.toolName
-				} else {
+				} else if (!ambiguousRepairedName) {
 					const originalName = mcpHub.findServerNameBySanitizedName(mcpBlock.serverName)
 					if (originalName) {
 						resolvedServerName = originalName

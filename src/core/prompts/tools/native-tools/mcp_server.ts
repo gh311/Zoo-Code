@@ -57,6 +57,7 @@ export function getMcpServerTools(mcpHub?: McpHub, allowedServers?: string[]): O
 			const segmentOwner = segmentOwners.get(baseSegment)
 			const toolSegment =
 				assignedSegment ??
+				// Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent mutants, when the condition is false (no owner, or the owner is this tool and the ?? above already handled the repeat) nextServerAlias returns the free base segment itself, so both branches agree.
 				(segmentOwner !== undefined && segmentOwner !== tool.name
 					? nextServerAlias(tool.name, new Set(segmentOwners.keys()))
 					: baseSegment)

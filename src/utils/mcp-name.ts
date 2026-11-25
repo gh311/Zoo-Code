@@ -145,6 +145,7 @@ export function nextServerAlias(name: string, taken: ReadonlySet<string>): strin
 	if (!taken.has(base)) {
 		return base
 	}
+	// Stryker disable next-line EqualityOperator: equivalent mutant, at most taken.size candidates can be taken, so a free candidate always appears at or before index taken.size + 1 and the +2 slack is unreachable.
 	for (let i = 2; i <= taken.size + 2; i++) {
 		const candidate = `${base}_${i}`
 		if (!taken.has(candidate)) {
@@ -182,6 +183,7 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
 	const overhead = MCP_TOOL_PREFIX.length + 2 * MCP_TOOL_SEPARATOR.length
 	const maxServerSegment = MAX_MCP_TOOL_NAME_LENGTH - overhead - sanitizedTool.length
 	const serverSegment =
+		// Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent mutants, slicing a string that is not longer than the cap returns it unchanged, so the always-slice and boundary mutants keep every observable name identical.
 		sanitizedServer.length > maxServerSegment
 			? sanitizedServer.slice(0, Math.max(maxServerSegment, 1))
 			: sanitizedServer
@@ -190,6 +192,7 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
 
 	// Last resort for a tool segment too long to fit even with a 1-character
 	// server segment. The reverse binding still maps the truncated name.
+	// Stryker disable next-line ConditionalExpression,EqualityOperator: the always-truncate and boundary mutants are slice-identity equivalents; the no-truncate direction is pinned by the 58-character tool-name test (the mutator granularity cannot split them).
 	if (fullName.length > MAX_MCP_TOOL_NAME_LENGTH) {
 		return fullName.slice(0, MAX_MCP_TOOL_NAME_LENGTH)
 	}

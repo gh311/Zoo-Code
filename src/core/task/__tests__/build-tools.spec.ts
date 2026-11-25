@@ -10,7 +10,7 @@
 import type OpenAI from "openai"
 import type * as vscode from "vscode"
 
-import type { McpServer, ModeConfig, ModelInfo } from "@roo-code/types"
+import type { McpServer, McpTool, ModeConfig, ModelInfo } from "@roo-code/types"
 
 import type { ClineProvider } from "../../webview/ClineProvider"
 import type { McpHub } from "../../../services/mcp/McpHub"
@@ -46,10 +46,16 @@ import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
  */
 type ProviderDouble = {
 	context: Pick<vscode.ExtensionContext, "extensionPath" | "globalStoragePath" | "storagePath" | "logPath">
-	getMcpHub: () => Pick<McpHub, "getServers" | "getServerAlias" | "registerGeneratedToolName"> | undefined
+	getMcpHub: () =>
+		| Pick<McpHub, "getServers" | "getServerAlias" | "registerGeneratedToolName" | "snapshotGeneratedToolBindings">
+		| undefined
 }
 
 function makeProvider(servers: McpServer[] = []): ClineProvider {
+	// One shared binding map per provider double, mirroring the hub's shared
+	// registry: a second build overwrites entries, and the per-build snapshot
+	// must freeze the first build's view.
+	const generatedToolBindings = new Map<string, { serverName: string; toolName: string }>()
 	const provider: ProviderDouble = {
 		context: { extensionPath: "/mock", globalStoragePath: "/mock", storagePath: "/mock", logPath: "/mock" },
 		// Explicit identity aliases: these tests verify which MCP declarations
@@ -59,7 +65,10 @@ function makeProvider(servers: McpServer[] = []): ClineProvider {
 		getMcpHub: () => ({
 			getServers: () => servers,
 			getServerAlias: (name: string) => name,
-			registerGeneratedToolName: () => {},
+			registerGeneratedToolName: (name: string, serverName: string, toolName: string) => {
+				generatedToolBindings.set(name, { serverName, toolName })
+			},
+			snapshotGeneratedToolBindings: () => new Map(generatedToolBindings),
 		}),
 	}
 	return provider as ClineProvider
@@ -302,5 +311,69 @@ describe("buildNativeToolsArrayWithRestrictions — Gemini includeAllToolsWithRe
 		})
 
 		expect(toolNames(result.tools)).toContain("mcp--test-server--test_tool")
+	})
+})
+
+describe("buildNativeToolsArrayWithRestrictions — per-request MCP binding snapshot", () => {
+	const pingTool: McpTool = {
+		name: "ping",
+		description: "d",
+		inputSchema: { type: "object", properties: {} },
+	}
+
+	const makeServer = (name: string): McpServer =>
+		({
+			name,
+			config: JSON.stringify({ type: "stdio", command: "node", args: ["test.js"] }),
+			status: "connected",
+			source: "global",
+			tools: [pingTool],
+		}) satisfies McpServer
+
+	it("freezes each build's generation-time bindings, so a later overwrite cannot retarget the first request", async () => {
+		// Identity aliases make "svc.prod" and "svc_prod" generate the same
+		// name, recreating the mid-flight reclaim: request 1 advertises
+		// mcp--svc_prod--ping for svc.prod; a second build after the literal
+		// server joins rebinds the shared name to svc_prod. Each build's
+		// returned snapshot keeps its own view (PR 2669, thread reply
+		// 4683206615).
+		const servers: McpServer[] = [makeServer("svc.prod")]
+		const provider = makeProvider(servers)
+
+		const request1 = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "/test/path",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+		})
+		expect(request1.mcpToolBindings?.get("mcp--svc_prod--ping")).toStrictEqual({
+			serverName: "svc.prod",
+			toolName: "ping",
+		})
+
+		// The literal server joins and the second build advertises it first:
+		// the shared binding map now answers svc_prod for the same name.
+		servers.unshift(makeServer("svc_prod"))
+		const request2 = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "/test/path",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+		})
+		expect(request2.mcpToolBindings?.get("mcp--svc_prod--ping")).toStrictEqual({
+			serverName: "svc_prod",
+			toolName: "ping",
+		})
+
+		// The first request's frozen snapshot still routes the call to the
+		// server that issued the name.
+		expect(request1.mcpToolBindings?.get("mcp--svc_prod--ping")).toStrictEqual({
+			serverName: "svc.prod",
+			toolName: "ping",
+		})
 	})
 })
