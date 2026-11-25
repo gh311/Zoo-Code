@@ -257,9 +257,9 @@ export class LiteLLMHandler extends RouterProvider implements SingleCompletionHa
 				include_usage: true,
 			},
 			// LiteLLM proxies to strict-unaware endpoints (e.g. AWS Bedrock via
-			// its OpenAI-compatible surface) that reject strict: true tool fields
-			// (#1137), so non-MCP tools are sent with strict: false.
-			tools: this.convertToolsForOpenAI(metadata?.tools, false),
+			// its OpenAI-compatible surface) that reject strict tool fields
+			// (#1137), so the strict key is omitted entirely and schemas preserved.
+			tools: this.convertToolsForOpenAI(metadata?.tools, false, false),
 			tool_choice: metadata?.tool_choice,
 		}
 		if (reasoningEffort) {

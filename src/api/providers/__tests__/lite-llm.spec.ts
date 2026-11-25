@@ -2515,7 +2515,7 @@ describe("LiteLLMHandler", () => {
 			expect(request.tools).toHaveLength(1)
 			// LiteLLM routes to strict-unaware endpoints (e.g. AWS Bedrock) that
 			// reject strict: true (issue #1137), so the flag must stay false.
-			expect(request.tools[0].function.strict).toBe(false)
+			expect(request.tools[0].function.strict).toBeUndefined()
 			// Strict off keeps the declared schema as-is: no required-list rewrite.
 			expect(request.tools[0].function.parameters).toStrictEqual(tool.function.parameters)
 		})

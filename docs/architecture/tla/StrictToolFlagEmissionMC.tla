@@ -5,7 +5,9 @@
 EXTENDS StrictToolFlagEmission
 CONSTANT Variant
 
-\* Fixed: the call site passes strict false (issue 1137).
-\* Unfixed: the call site omits the flag. The default applies (true).
+\* Fixed: the call site omits the strict key entirely (issue 1137).
+\* Unfixed: the call site keeps the default flag true. The default applies (true).
+\* KeyPresent: the strict key is present but the endpoint rejects its presence.
 MCCallSiteFlag == Variant = "Unfixed"
+MCOmitsStrictKey == Variant = "Fixed"
 ====

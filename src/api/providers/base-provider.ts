@@ -40,6 +40,7 @@ export abstract class BaseProvider implements ApiHandler {
 	protected convertToolsForOpenAI(
 		tools: any[] | undefined,
 		strict: boolean = DEFAULT_OPEN_AI_STRICT_TOOL_SCHEMAS,
+		emitStrictKey: boolean = true,
 	): any[] | undefined {
 		if (!tools) {
 			return undefined
@@ -67,7 +68,7 @@ export abstract class BaseProvider implements ApiHandler {
 					// (e.g. DeepSeek) reject the whole request otherwise. See #461.
 					name: sanitizeSurrogates(tool.function.name),
 					description: sanitizeSurrogates(tool.function.description),
-					strict: useStrict,
+					...(emitStrictKey ? { strict: useStrict } : {}),
 					parameters: sanitizeSurrogatesDeep(
 						useStrict
 							? stripUnsupportedStrictKeywords(this.convertToolSchemaForOpenAI(tool.function.parameters))

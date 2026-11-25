@@ -26,21 +26,28 @@
 \* Cost: each TLC run takes less than 1 second. Agent work takes about 5 minutes.
 
 CONSTANT CallSiteFlag
+CONSTANT OmitsStrictKey
 VARIABLE input
 
 \* acceptsStrict: the endpoint accepts a strict-true tool. A strict-aware
 \* endpoint accepts it. A strict-unaware proxy (LiteLLM to Bedrock) rejects it.
+\* acceptsStrictKey: the endpoint accepts a tool that carries the strict key
+\* at all, even when its value is false. Some strict-unaware proxies reject
+\* any presence of the key (issue 1137).
 \* isMcp: the tool name has the MCP prefix. The emitter keeps strict false
 \* for such tools.
-Inputs == [acceptsStrict : BOOLEAN, isMcp : BOOLEAN]
+Inputs == [acceptsStrict : BOOLEAN, acceptsStrictKey : BOOLEAN, isMcp : BOOLEAN]
 Init == input \in Inputs
 Next == UNCHANGED input
 Spec == Init /\ [][Next]_input
 
-\* The emitter is BaseProvider.convertToolsForOpenAI. A non-MCP tool takes
-\* its strict value from the call-site flag. An MCP tool keeps strict false.
-EmittedStrict == CallSiteFlag /\ ~input.isMcp
+\* The emitter is BaseProvider.convertToolsForOpenAI. The LiteLLM route omits
+\* the strict key entirely; other routes emit it. A non-MCP tool takes its
+\* strict value from the call-site flag when the key is present.
+EmittedStrictKey == ~OmitsStrictKey /\ ~input.isMcp
+EmittedStrict == EmittedStrictKey /\ CallSiteFlag /\ ~input.isMcp
 
 TypeOK == input \in Inputs
 EmitsStrictIffAccepted == EmittedStrict => input.acceptsStrict
+PresentKeyAccepted == EmittedStrictKey => input.acceptsStrictKey
 ====
