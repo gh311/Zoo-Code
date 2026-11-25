@@ -508,7 +508,11 @@ describe("LiteLLMHandler", () => {
 					{ type: "function", function: { name: "mcp--fs--read" } },
 				],
 			})
-			expect(request.tools.every((t: any) => t.function.strict === undefined)).toBe(true)
+			expect(
+				(request.tools as Array<{ function: { strict?: unknown } }>).every(
+					(t) => t.function.strict === undefined,
+				),
+			).toBe(true)
 			expect(request.max_tokens).toBeUndefined()
 			expect(request.temperature).toBeUndefined()
 		})
