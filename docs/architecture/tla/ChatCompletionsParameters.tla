@@ -1,7 +1,8 @@
 ---- MODULE ChatCompletionsParameters ----
-\* Source: OpenAiHandler options. Sink: chat-completions request body.
+\* Source: OpenAiHandler.createMessage and handleO3FamilyMessage. Sink: chat-completions request body.
 \* Failure: enterprise endpoints reject parallel_tool_calls and tool_choice.
 \* Rule: per-profile omit flag removes both keys entirely (never null).
+\* Checks: not run; cost and findings pending.
 CONSTANTS HonorOmit, HonorDefault, HonorNoNull
 VARIABLE source
 
