@@ -40,6 +40,7 @@ import { DEFAULT_HEADERS, NOT_PROVIDED } from "./constants"
 import { BaseProvider } from "./base-provider"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata, CompletePromptOptions } from "../index"
 import { handleOpenAIError } from "./utils/error-handler"
+import { createUndiciTimeoutFetch } from "./utils/transport-timeout"
 import { extractReasoningFromDelta } from "./utils/extract-reasoning"
 import {
 	bridgeExternalAbortSignal,
@@ -109,6 +110,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiKey,
 				defaultHeaders: headers,
 				timeout: this.timeoutMs,
+				fetch: createUndiciTimeoutFetch(this.timeoutMs),
 			})
 		} else if (isAzureAiInference) {
 			// Azure AI Inference Service (e.g., for DeepSeek) uses a different path structure
@@ -118,6 +120,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				defaultHeaders: headers,
 				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
 				timeout: this.timeoutMs,
+				fetch: createUndiciTimeoutFetch(this.timeoutMs),
 			})
 		} else if (isAzureOpenAi) {
 			// Azure API shape slightly differs from the core API shape:
@@ -129,6 +132,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
 				defaultHeaders: headers,
 				timeout: this.timeoutMs,
+				fetch: createUndiciTimeoutFetch(this.timeoutMs),
 			})
 		} else {
 			this.client = new OpenAI({
@@ -136,6 +140,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiKey,
 				defaultHeaders: headers,
 				timeout: this.timeoutMs,
+				fetch: createUndiciTimeoutFetch(this.timeoutMs),
 			})
 		}
 	}

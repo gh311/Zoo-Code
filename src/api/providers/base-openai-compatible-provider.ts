@@ -4,6 +4,7 @@ import OpenAI from "openai"
 import { type ModelInfo, openAiModelInfoSaneDefaults } from "@roo-code/types"
 
 import { type ApiHandlerOptions, getModelMaxOutputTokens } from "../../shared/api"
+import { createUndiciTimeoutFetch } from "./utils/transport-timeout"
 import { TagMatcher } from "../../utils/tag-matcher"
 import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
 import { convertToOpenAiMessages } from "../transform/openai-format"
@@ -64,6 +65,7 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 			apiKey: this.options.apiKey,
 			defaultHeaders: DEFAULT_HEADERS,
 			timeout: this.timeoutMs,
+			fetch: createUndiciTimeoutFetch(this.timeoutMs),
 		})
 	}
 

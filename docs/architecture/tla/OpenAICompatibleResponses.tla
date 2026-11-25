@@ -24,7 +24,7 @@
 \* Review 6385d18512: 1 covered (subclass isolation), 2 added (null defaults and replay scope), 5 gap.
 \* Gaps 4-8 concern test evidence, malformed SDK output, comments, and UI wording.
 \* The routing model already covered incompatible providers, but DeepSeek lacked the code guard.
-\* Current gate: 22860 routing states pass; eleven sabotage configs and the unfixed config fail.
+\* Current gate: 35424 routing states pass; eleven sabotage configs and the unfixed config fail.
 \* Across three models: 30 sabotage configs fail with invariant error 12; three fixed configs pass.
 \* Separate real-code mutations fail the focused tests. See ResponsesReviewReplays.md for each mapping.
 \* These are manual gates. No script or CI step proves code/model correspondence.
