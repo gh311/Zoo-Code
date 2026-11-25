@@ -24,7 +24,11 @@ import { isBinaryFile } from "isbinaryfile"
 import { readFileTool } from "../ReadFileTool"
 import { formatResponse } from "../../prompts/responses"
 import { validateImageForProcessing, processImageFile, isSupportedImageFormat } from "../helpers/imageHelpers"
-import { extractTextFromFile, getSupportedBinaryFormats } from "../../../integrations/misc/extract-text"
+import {
+	extractTextFromFile,
+	extractTextFromFileWithMetadata,
+	getSupportedBinaryFormats,
+} from "../../../integrations/misc/extract-text"
 import { readWithIndentation, readWithSlice } from "../../../integrations/misc/indentation-reader"
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -49,6 +53,7 @@ vi.mock("isbinaryfile")
 
 vi.mock("../../../integrations/misc/extract-text", () => ({
 	extractTextFromFile: vi.fn(),
+	extractTextFromFileWithMetadata: vi.fn(),
 	addLineNumbers: vi.fn().mockImplementation((text: string, startLine = 1) => {
 		if (!text) return ""
 		const lines = text.split("\n")
@@ -123,6 +128,7 @@ const mockedFsStat = vi.mocked(fsPromises.stat)
 
 const mockedIsBinaryFile = vi.mocked(isBinaryFile)
 const mockedExtractTextFromFile = vi.mocked(extractTextFromFile)
+const mockedExtractTextFromFileWithMetadata = vi.mocked(extractTextFromFileWithMetadata)
 const mockedReadWithSlice = vi.mocked(readWithSlice)
 const mockedReadWithIndentation = vi.mocked(readWithIndentation)
 const mockedIsSupportedImageFormat = vi.mocked(isSupportedImageFormat)
@@ -664,6 +670,122 @@ describe("ReadFileTool", () => {
 				vi.resetModules()
 				await realFs.rm(tempDir, { recursive: true, force: true }).catch(() => {})
 			}
+		})
+	})
+
+	describe("extractable text formats (e.g. .ipynb)", () => {
+		beforeEach(() => {
+			mockedIsBinaryFile.mockResolvedValue(false)
+			// A prior test narrows the format list; restore the full set.
+			vi.mocked(getSupportedBinaryFormats).mockReturnValue([".pdf", ".docx", ".ipynb"])
+		})
+
+		it("should read a notebook by its extracted lines at the requested offset", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			mockedExtractTextFromFileWithMetadata.mockResolvedValue({
+				content: "1 | cell 1\n2 | cell 2\n3 | cell 3",
+				totalLines: 3,
+				returnedLines: 3,
+				wasTruncated: false,
+			})
+
+			await readFileTool.execute(
+				{ path: "notebook.ipynb", offset: 2, limit: 1 },
+				mockTask as unknown as Task,
+				callbacks,
+			)
+
+			// extraction by extracted-line coordinates; raw JSON is never sliced
+			expect(mockedExtractTextFromFileWithMetadata).toHaveBeenCalledWith("/test/workspace/notebook.ipynb")
+			expect(mockedReadWithSlice).not.toHaveBeenCalled()
+			const retrieved = callbacks.pushToolResult.mock.calls[0]?.[0]
+			expect(retrieved).toContain("2 | cell 2")
+			expect(retrieved).not.toContain("cell 1")
+			expect(retrieved).not.toContain("cell 3")
+		})
+
+		it("should show a truncation notice when the extracted content is sliced short", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			mockedExtractTextFromFileWithMetadata.mockResolvedValue({
+				content: "1 | cell 1\n2 | cell 2\n3 | cell 3\n4 | cell 4\n5 | cell 5",
+				totalLines: 5,
+				returnedLines: 5,
+				wasTruncated: false,
+			})
+
+			await readFileTool.execute(
+				{ path: "notebook.ipynb", offset: 1, limit: 2 },
+				mockTask as unknown as Task,
+				callbacks,
+			)
+
+			const retrieved = callbacks.pushToolResult.mock.calls[0]?.[0]
+			expect(retrieved).toContain("File content truncated")
+			expect(retrieved).toContain("Showing lines 1-2 of 5 total lines")
+			expect(retrieved).toContain("To read more: Use the read_file tool with offset=3 and limit=2")
+			expect(retrieved).toContain("cell 2")
+			expect(retrieved).not.toContain("cell 3")
+		})
+
+		it("should return the beyond-end error for an offset past the extracted lines", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			mockedExtractTextFromFileWithMetadata.mockResolvedValue({
+				content: "1 | cell 1\n2 | cell 2\n3 | cell 3",
+				totalLines: 3,
+				returnedLines: 3,
+				wasTruncated: false,
+			})
+
+			await readFileTool.execute({ path: "notebook.ipynb", offset: 100 }, mockTask as unknown as Task, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("Error: offset 100 is beyond file end (3 lines)"),
+			)
+		})
+
+		it("should report an empty file when the extractor yields no content", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			mockedExtractTextFromFileWithMetadata.mockResolvedValue({
+				content: "",
+				totalLines: 0,
+				returnedLines: 0,
+				wasTruncated: false,
+			})
+
+			await readFileTool.execute({ path: "empty.ipynb" }, mockTask as unknown as Task, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Note: File is empty"))
+		})
+
+		it("should keep the raw text path for indentation mode", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			mockedFsReadFile.mockResolvedValue(Buffer.from('{"cells":[]}'))
+			mockedReadWithIndentation.mockReturnValue({
+				content: "1 | raw json",
+				returnedLines: 1,
+				totalLines: 1,
+				wasTruncated: false,
+				includedRanges: [[1, 1]],
+			})
+
+			await readFileTool.execute(
+				{ path: "notebook.ipynb", mode: "indentation", indentation: { anchor_line: 1 } },
+				mockTask as unknown as Task,
+				callbacks,
+			)
+
+			expect(mockedExtractTextFromFileWithMetadata).not.toHaveBeenCalled()
+			expect(mockedReadWithIndentation).toHaveBeenCalled()
 		})
 	})
 
