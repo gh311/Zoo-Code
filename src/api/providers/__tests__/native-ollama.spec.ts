@@ -329,6 +329,65 @@ describe("NativeOllamaHandler", () => {
 			])
 		})
 
+		it("runs a recovered pseudo call before a native call the model wrote after it", async () => {
+			// The finding's exact scenario (thread 4692727034): the model
+			// writes a pseudo write_to_file first and a native read_file
+			// second. The held block defers the native arrival, so the
+			// recovered call must claim the earlier index — a consumer
+			// reading through the native call must see the written file.
+			mockChat.mockImplementation(async function* () {
+				yield {
+					message: {
+						content:
+							'<function_calls><invoke name="write_to_file"><parameter name="path">prova.txt</parameter><parameter name="content">test</parameter></invoke></function_calls>',
+					},
+				}
+				yield {
+					message: {
+						content: "",
+						tool_calls: [{ function: { name: "read_file", arguments: { path: "prova.txt" } } }],
+					},
+				}
+			})
+
+			const writeFileTool = {
+				type: "function",
+				function: {
+					name: "write_to_file",
+					description: "Write a file",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" }, content: { type: "string" } },
+						required: ["path", "content"],
+					},
+				},
+			} as const
+			const readFileTool = {
+				type: "function",
+				function: {
+					name: "read_file",
+					description: "Read a file",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" } },
+						required: ["path"],
+					},
+				},
+			} as const
+			const stream = handler.createMessage("System", [{ role: "user" as const, content: "Hi" }], {
+				taskId: "test",
+				tools: [writeFileTool, readFileTool],
+			})
+			const parts = await collectStream(stream)
+
+			const calls = parts.filter((p) => p.type === "tool_call_partial") as Array<{
+				index: number
+				name: string
+				arguments: string
+			}>
+			expect(calls.map((call) => call.name)).toStrictEqual(["write_to_file", "read_file"])
+		})
+
 		it("keeps a later native call behind deferred calls when the holdback drains", async () => {
 			// The model wrote: held marker fragment, native A, safe prose,
 			// native B. The prose drains the holdback, so B must not pass
