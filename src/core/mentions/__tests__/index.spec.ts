@@ -59,7 +59,13 @@ const makeDir = async (prefix: string): Promise<string> => mkdtemp(path.join(tmp
 const mentionValueFor = (absPath: string): string => {
 	const posix = absPath.split(path.sep).join("/")
 	const trimmed = posix.replace(/^\/+/, "")
-	return posix.startsWith("/") ? `//${trimmed}` : `/${trimmed}`
+	// Production emit escapes spaces (escapeSpaces in insertMention) and
+	// mentionRegex stops an unescaped mention at the first space, so the
+	// helper must match that contract — a tmpdir with a space (a Windows
+	// profile, a macOS /Users/John Smith) otherwise resolves only the
+	// text before the space (thread 4695824867).
+	const escaped = trimmed.replace(/ /g, "\\ ")
+	return posix.startsWith("/") ? `//${escaped}` : `/${escaped}`
 }
 
 describe("parseMentions - URL mention handling", () => {
@@ -187,6 +193,58 @@ describe("parseMentions - mention path resolution (#1271)", () => {
 			expect(fileBlock!.content).toContain("workspace version")
 		} finally {
 			await rm(ws, { recursive: true, force: true })
+		}
+	})
+
+	it("keeps the workspace selection even when an absolute counterpart exists", async () => {
+		// PR 2681 round-4 thread: '@/etc/hosts' is the workspace-relative
+		// form. It resolves against the cwd and never consults the machine
+		// root, so a same-named absolute file (the real /etc/hosts) cannot
+		// steal the selection — no root write access needed to pin that,
+		// because the single-slash resolver never calls pathExists on the
+		// absolute path at all. Root-anchored priority belongs only to the
+		// double-slash absolute-tab form.
+		const ws = await makeDir("ws-hosts-cwd-")
+		await mkdir(path.join(ws, "etc"), { recursive: true })
+		const wsHosts = path.join(ws, "etc", "hosts")
+		await writeFile(wsHosts, "workspace hosts\n")
+		try {
+			const result = await parseMentions("@/etc/hosts", ws)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.content).toContain("workspace hosts")
+			// The block keeps the workspace-relative mention identity; the
+			// cwd-relative resolution is what put the workspace file's
+			// content in the block.
+			expect(fileBlock!.path).toBe("etc/hosts")
+			expect(path.resolve(ws, fileBlock!.path!)).toBe(path.normalize(wsHosts))
+		} finally {
+			await rm(ws, { recursive: true, force: true })
+		}
+	})
+
+	it("resolves a mention whose fixture path contains a space end to end", async () => {
+		// The helper escapes spaces to match the production emit contract;
+		// this fixture exercises the round trip on every platform, not
+		// only where the runner's tmpdir happens to contain a space
+		// (thread 4695824867).
+		const taskCwd = await makeDir("spaced cwd-")
+		const outsideDir = await makeDir("spaced outside-")
+		const spacedFile = path.join(outsideDir, "notes with space.txt")
+		await writeFile(spacedFile, "spaced path content\n")
+		try {
+			const result = await parseMentions(`@${mentionValueFor(spacedFile)}`, taskCwd)
+			const fileBlock = result.contentBlocks.find((b) => b.type === "file")
+
+			expect(fileBlock).toBeTruthy()
+			expect(fileBlock!.content).toContain("spaced path content")
+			expect(path.normalize(fileBlock!.path!)).toBe(path.normalize(spacedFile))
+		} finally {
+			await Promise.all([
+				rm(taskCwd, { recursive: true, force: true }),
+				rm(outsideDir, { recursive: true, force: true }),
+			])
 		}
 	})
 
