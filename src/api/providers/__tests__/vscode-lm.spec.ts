@@ -5286,6 +5286,38 @@ describe("leaked tool-call recovery", () => {
 			expect(leftoverText).toBe(text)
 		})
 
+		it("does not recover an invoke whose carried span closes at an invalid fence line", () => {
+			// ```lang`value is prose under CommonMark: a backtick fence's
+			// info string cannot contain a backtick, so the line is not a
+			// fence opener and the carried-span search keeps reading it.
+			// The `example span's closer (the single backtick before
+			// `value) therefore still quotes the invoke. Without the fix
+			// the invalid opener stopped the search and the invoke was
+			// recovered as a live call.
+			const block = invoke("update_todo_list", param("todos", "[x] one"))
+			const text = "`example\n" + block + "\n```lang`value"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, new Set(["update_todo_list"]), "", true)
+
+			expect(calls).toHaveLength(0)
+			expect(leftoverText).toBe(text)
+			expect(leftoverText).toContain(block)
+		})
+
+		it("still recovers an invoke when a valid backtick fence ends the carried span's prose region", () => {
+			// ```lang carries no backtick in its info string, so it IS a
+			// fence opener: block structure takes precedence over inline
+			// spans, the span cannot reach fenced content, and the invoke
+			// is a genuine leak (same contract as the later-fence test).
+			const block = invoke("update_todo_list", param("todos", "[x] one"))
+			const text = "`example\n" + block + "\n```lang\nboxed"
+
+			const { calls, leftoverText } = extractLeakedToolCalls(text, new Set(["update_todo_list"]), "", true)
+
+			expect(calls).toEqual([{ name: "update_todo_list", input: { todos: "[x] one" } }])
+			expect(leftoverText).not.toContain(block)
+		})
+
 		it("does not recover an invoke inside a tilde fence containing a backtick fence line", () => {
 			const text = "~~~\n```\n" + invoke("update_todo_list", param("todos", "[x] one")) + "\n```\n~~~"
 

@@ -341,18 +341,37 @@ function hasQuotingCue(sameLineBefore: string): boolean {
 }
 
 /**
+ * True when a line opens a fenced code block under CommonMark. A tilde
+ * fence accepts any info string; a backtick fence's info string must
+ * contain no backtick, so a line like ```lang`value is prose carrying
+ * code-span delimiters, not a fence opener (review round 7).
+ */
+function opensFence(line: string): boolean {
+	if (/^ {0,3}~{3,}/.test(line)) {
+		return true
+	}
+	const backticks = /^ {0,3}`{3,}/.exec(line)
+	if (!backticks) {
+		return false
+	}
+	return !line.slice(backticks[0].length).includes("`")
+}
+
+/**
  * True when a backtick run of exactly `carried` width closes a span opened
  * before the block, searching the text after it. The search walks prose lines
- * only: it stops at the first fenced-block marker line, because block
- * structure takes precedence over inline spans - a fence ends the prose
- * region, and fence lines plus their content are fence syntax, never
- * code-span delimiters. The partial line the block ends on is always prose:
- * a fence marker can only open at a line start.
+ * only: it stops at the first fenced-block opener, because block structure
+ * takes precedence over inline spans - a fence ends the prose region, and
+ * fence lines plus their content are fence syntax, never code-span
+ * delimiters. Only valid CommonMark openers stop the search: a backtick run
+ * whose info string contains a backtick (e.g. ```lang`value) is prose, and
+ * its runs still participate in span matching. The partial line the block
+ * ends on is always prose: a fence opener can only sit at a line start.
  */
 function closesCarriedCodeSpan(rest: string, carried: number): boolean {
 	const lines = rest.split("\n")
 	for (const [index, line] of lines.entries()) {
-		if (index > 0 && /^ {0,3}(?:`{3,}|~{3,})/.test(line)) {
+		if (index > 0 && opensFence(line)) {
 			return false
 		}
 		for (const run of line.matchAll(/`+/g)) {
